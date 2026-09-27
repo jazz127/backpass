@@ -250,27 +250,48 @@ export class State {
   }
 }
 
-/** Refuse link traversal on an explicit private state path, including existing parents. */
+/**
+ * Refuse link traversal on an explicit private state path, including existing parents. The only link
+ * followed is a system one (e.g. macOS /tmp, /var): owned by root, in a root-owned directory nobody else
+ * can write, and above the first directory this user owns. Checks apply to the canonical directory.
+ */
 function assertPrivatePath(target, { privateLeaf = false } = {}) {
   const absolute = path.resolve(target);
-  let part = path.parse(absolute).root;
-  for (const segment of absolute.slice(part.length).split(path.sep).filter(Boolean)) {
-    part = path.join(part, segment);
+  const uid = typeof process.getuid === "function" ? process.getuid() : null;
+  let resolved = path.parse(absolute).root;
+  let parent = fs.lstatSync(resolved);
+  let userOwned = false;
+  const segments = absolute.slice(resolved.length).split(path.sep).filter(Boolean);
+  for (const [index, segment] of segments.entries()) {
+    const part = path.join(resolved, segment);
+    const leaf = index === segments.length - 1;
     let stat;
     try {
       stat = fs.lstatSync(part);
     } catch (error) {
-      if (error.code === "ENOENT") continue;
+      if (error.code === "ENOENT") return;
       throw new UserError(`cannot inspect private state path ${part}: ${error.message}`);
     }
+    if (stat.isSymbolicLink() && !leaf && !userOwned && uid !== null && isSystemLink(stat, parent)) {
+      resolved = fs.realpathSync(part);
+      stat = fs.lstatSync(resolved);
+    } else {
+      resolved = part;
+    }
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new UserError(`unsafe private state path ${part}`);
-    if (part === absolute && typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+    if (uid !== null && stat.uid === uid) userOwned = true;
+    parent = stat;
+    if (leaf && uid !== null && stat.uid !== uid) {
       throw new UserError(`private state directory is not owned by this user: ${part}`);
     }
-    if (part === absolute && privateLeaf && stat.mode & 0o077) {
+    if (leaf && privateLeaf && stat.mode & 0o077) {
       throw new UserError(`private state directory has unsafe permissions: ${part}`);
     }
   }
+}
+
+function isSystemLink(link, parent) {
+  return link.uid === 0 && parent.uid === 0 && !(parent.mode & 0o022);
 }
 
 function assertPrivateFile(file) {

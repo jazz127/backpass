@@ -114,6 +114,73 @@ test("private state path refuses links and permissive existing directories", () 
   );
 });
 
+test("private state path under the platform temp dir is accepted", () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-tmp-repo-"));
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-tmp-state-"));
+  try {
+    const state = new State(repoRoot, {
+      stateDir: path.join(parent, "x"),
+      mode: 0o700,
+      exclude: false,
+      binding: { kind: "project", root: repoRoot },
+    }).ensure();
+    assert.equal(state.readRunContext(), null);
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+    fs.rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("private state path refuses a user-owned ancestor link", () => {
+  const { repoRoot } = fixture("ancestor");
+  const target = path.join(root, "ancestor-target");
+  fs.mkdirSync(target, { mode: 0o700 });
+  const link = path.join(root, "ancestor-link");
+  fs.symlinkSync(target, link);
+  assert.throws(
+    () =>
+      new State(repoRoot, {
+        stateDir: path.join(link, "state"),
+        mode: 0o700,
+        binding: { kind: "project", root: repoRoot },
+      }).ensure(),
+    /unsafe private state path/,
+  );
+});
+
+test("private state path follows a root-owned system ancestor link", { skip: !process.getuid }, (t) => {
+  const { repoRoot } = fixture("system");
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(root, "system-")));
+  const target = path.join(base, "real");
+  fs.mkdirSync(target, { mode: 0o700 });
+  const link = path.join(base, "link");
+  fs.symlinkSync(target, link);
+  const make = () =>
+    new State(repoRoot, {
+      stateDir: path.join(link, "state"),
+      mode: 0o700,
+      exclude: false,
+      binding: { kind: "project", root: repoRoot },
+    }).ensure();
+  const lstat = fs.lstatSync;
+  const rootOwned = (parentMode) =>
+    t.mock.method(fs, "lstatSync", (file, ...rest) => {
+      const stat = lstat(file, ...rest);
+      if (file !== link && file !== base && !base.startsWith(`${file}${path.sep}`)) return stat;
+      return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, {
+        uid: 0,
+        mode: file === base ? (stat.mode & ~0o7777) | parentMode : stat.mode,
+      });
+    });
+  const writable = rootOwned(0o777);
+  assert.throws(make, /unsafe private state path/);
+  writable.mock.restore();
+  const locked = rootOwned(0o755);
+  make();
+  locked.mock.restore();
+  assert.ok(fs.statSync(path.join(target, "state", "scope.json")).isFile());
+});
+
 test("timeout and prompt retry flags override config for one invocation", () => {
   const { repoRoot } = fixture("flags");
   const configFile = path.join(repoRoot, ".backpassrc.json");

@@ -212,7 +212,13 @@ export function recordGapObservations(ledger, evidenceRecords, options = {}) {
       }
       const identityPrior = entry.sessions[sessionIdentity];
       const aliasPrior = transcript.id && transcript.id !== sessionIdentity ? entry.sessions[transcript.id] : null;
-      const priors = [identityPrior, aliasPrior].filter(Boolean);
+      const sameTrace = (observation) =>
+        (transcript.sourceKind !== "external" && observation.sourceKind !== "external") ||
+        (observation.sourceKind === (transcript.sourceKind || "native") &&
+          observation.sourceId === (transcript.sourceId || null) &&
+          observation.revision === (transcript.revision || null) &&
+          observation.evidenceKey === (record.key || null));
+      const priors = [identityPrior, aliasPrior].filter((observation) => observation && sameTrace(observation));
       const firstObservedAt = priors
         .map((observation) => observation.firstObservedAt || observation.observedAt)
         .filter((value) => Number.isFinite(Date.parse(value)))
@@ -232,7 +238,9 @@ export function recordGapObservations(ledger, evidenceRecords, options = {}) {
         firstObservedAt: firstObservedAt || observedAt,
         observedAt,
         sessionStartedAt:
-          transcript.startedAt ?? identityPrior?.sessionStartedAt ?? aliasPrior?.sessionStartedAt ?? null,
+          transcript.startedAt ??
+          priors.find((observation) => observation.sessionStartedAt != null)?.sessionStartedAt ??
+          null,
         memoryHash: record.memoryHash || null,
         evidenceKey: record.key || null,
         sourceKind: transcript.sourceKind || "native",

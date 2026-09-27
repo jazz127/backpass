@@ -328,6 +328,74 @@ test("consolidation prompt excludes native and revoked ledger observations", asy
   assert.deepEqual(h.state.readGapLedger().entries.foreign.sessions, { native: nativeSighting });
 });
 
+test("a later revision citing a revoked gap never carries the revoked wording into prompts", async () => {
+  const h = setup({ agent: "claude", model: null, effort: null });
+  const revised = { ...h.transcript, revision: "rev-2" };
+  h.state.writeGapLedger({
+    version: 1,
+    entries: {
+      revoked: {
+        id: "revoked",
+        memoryPath: "AGENTS.md",
+        proposedInstruction: "Revoked old wording",
+        phrasings: ["Revoked old wording"],
+        sessions: {
+          [revised.identity]: {
+            sourceKind: "external",
+            sourceId: revised.sourceId,
+            revision: "rev-1",
+            evidenceKey: "old",
+            firstObservedAt: new Date().toISOString(),
+            coveredBySkill: "revoked-skill",
+            phrasings: ["Revoked old wording"],
+          },
+        },
+      },
+    },
+  });
+  h.state.writeEvidence(revised, {
+    status: "ok",
+    transcript: revised,
+    memoryPath: "AGENTS.md",
+    memoryHash: "memory-a",
+    key: evidenceKey(revised, "memory-a"),
+    positive: [],
+    negative: [],
+    gaps: [
+      {
+        proposedInstruction: "Bind publication attestation to its exact commit.",
+        matchesGap: "revoked",
+        mistake: "current mistake",
+        quote: "I checked the sample.",
+        recurrenceRisk: "high",
+      },
+      {
+        proposedInstruction: "Keep credential seats isolated per run.",
+        mistake: "current mistake",
+        quote: "I checked the sample.",
+        recurrenceRisk: "high",
+      },
+    ],
+  });
+  await foldForRun(
+    {
+      config: { ...h.config, minGapEvidence: 2, gapLedgerMaxAge: "90d" },
+      repo: { root: h.root },
+      sessionSource: { sourceId: revised.sourceId },
+    },
+    h.memoryFile,
+    "memory-a",
+    [],
+    [revised],
+  );
+  const prompt = recordedCalls().at(-1).prompt;
+  assert.match(prompt, /Bind publication attestation/);
+  assert.doesNotMatch(prompt, /Revoked old wording|revoked-skill/);
+  const observation = h.state.readGapLedger().entries.revoked.sessions[revised.identity];
+  assert.deepEqual(observation.phrasings, ["Bind publication attestation to its exact commit."]);
+  assert.equal(observation.coveredBySkill, undefined);
+});
+
 test("a grown native session keeps its unmentioned sighting on disk but out of prompts", async () => {
   const h = setup({ agent: "claude", model: null, effort: null });
   const grown = {

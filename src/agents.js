@@ -343,7 +343,11 @@ export class AgentResolver {
   async verdictFor(candidate) {
     const key = this.probeKey(candidate);
     const memo = this.memo.get(key);
-    if (memo && memo.authState === this.credentialFingerprint(candidate) && memo.scope === this.probeScope())
+    if (
+      memo &&
+      memo.authState === this.credentialFingerprint(candidate, memo.resolvedModel) &&
+      memo.scope === this.probeScope()
+    )
       return memo;
     if (this.inflight.has(key)) return this.inflight.get(key);
     const pending = this.probeAndRecord(candidate, key).finally(() => this.inflight.delete(key));
@@ -354,8 +358,7 @@ export class AgentResolver {
   async probeAndRecord(candidate, key) {
     const cache = await this.loadCache();
     const cached = cache.entries[key];
-    const authState = this.credentialFingerprint(candidate);
-    const authStateMatches = cached?.authState === authState;
+    const authStateMatches = cached?.authState === this.credentialFingerprint(candidate, cached?.resolvedModel);
     const scopeMatches =
       cached?.scope === undefined ? this.probeScope() === "native:::" : cached?.scope === this.probeScope();
     if (!this.bypassCache && authStateMatches && scopeMatches && isProbeEntryFresh(cached, { now: this.now() })) {
@@ -376,6 +379,7 @@ export class AgentResolver {
         sessionName: `backpass-probe-${process.pid}-${this.probeCount}`,
       });
     }
+    const authState = this.credentialFingerprint(candidate, result.resolvedModel);
     const entry = {
       verdict: result.verdict,
       detail: result.detail || "",
@@ -395,8 +399,8 @@ export class AgentResolver {
     return entry;
   }
 
-  credentialFingerprint({ agent, model }) {
-    return this.providerAuthState(agent, { model });
+  credentialFingerprint({ agent, model }, resolvedModel = null) {
+    return this.providerAuthState(agent, { model: resolvedModel || model });
   }
 
   probeScope() {

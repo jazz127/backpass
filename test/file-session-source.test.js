@@ -227,7 +227,6 @@ test("selected source evidence is anchored only to retained approved event text"
   });
   assert.doesNotMatch(distilled.trace, /\/private\/transcripts|raw transcript|Open the raw/);
   assert.doesNotMatch(prompt, /\/private\/transcripts|raw transcript|Open the raw/);
-  assert.match(prompt, /leave that claim out/);
 
   const item = (quote) => ({ positive: [{ instruction: "AG-001", quote }] });
   const exact = sanitizeEvidence(

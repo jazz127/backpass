@@ -17,6 +17,7 @@ import { distill } from "../src/distill.js";
 import { classifyInteraction } from "../src/interaction.js";
 import { sanitizeEvidence } from "../src/analyze.js";
 import { renderPrompt } from "../src/prompts.js";
+import { assertSourceCurrent } from "../src/provenance.js";
 
 const fixtures = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -154,6 +155,50 @@ test("a source origin harness does not need a native adapter", async () => {
     (await readTranscript(result.transcripts[0])).events.map((event) => event.eventId),
     ["e1", "e2"],
   );
+});
+
+test("a later approved revision replaces the same session in discovery", async () => {
+  const repo = projectRepo();
+  const { root, manifest, payload } = makeSnapshot((session) => {
+    session.association.cwd = repo.root;
+  });
+  const before = await discoverTranscripts({ repo, scope: projectScope(repo), config: config(), sessionSource: root });
+  const revised = structuredClone(payload);
+  revised.revision = "rev-2";
+  revised.projectedAt = "2026-01-04T00:00:00Z";
+  revised.events[0].text = "A later approved revision.";
+  revised.screening.approvedContentDigest = approvedContentDigest(revised);
+  const bytes = canonicalize(revised);
+  const contentPath = "sessions/sample-session/rev-2.json";
+  fs.writeFileSync(path.join(root, contentPath), bytes, { mode: 0o600 });
+  manifest.sessions.push({
+    sessionId: revised.sessionId,
+    revision: revised.revision,
+    contentPath,
+    byteLength: bytes.length,
+    sha256: digest(revised),
+  });
+  manifest.coverage.published += 1;
+  manifest.coverage.considered += 1;
+  manifest.snapshotDigest = snapshotDigest(manifest);
+  fs.writeFileSync(path.join(root, "manifest.json"), canonicalize(manifest), { mode: 0o600 });
+
+  const after = await discoverTranscripts({ repo, scope: projectScope(repo), config: config(), sessionSource: root });
+  assert.equal(after.transcripts.length, 1);
+  assert.equal(after.transcripts[0].revision, "rev-2");
+  assert.equal(transcriptIdentity(after.transcripts[0]), transcriptIdentity(before.transcripts[0]));
+  assert.notEqual(after.transcripts[0].contentSignature, before.transcripts[0].contentSignature);
+  assert.equal((await readTranscript(after.transcripts[0])).events[0].text, "A later approved revision.");
+});
+
+test("a proposal source binding refuses a changed approved snapshot", () => {
+  const { root, manifest } = makeSnapshot();
+  const ctx = { sessionSourcePath: root, sessionSource: discoverFileSource(root) };
+  assert.doesNotThrow(() => assertSourceCurrent(ctx));
+  manifest.createdAt = "2026-01-05T00:00:00Z";
+  manifest.snapshotDigest = snapshotDigest(manifest);
+  fs.writeFileSync(path.join(root, "manifest.json"), canonicalize(manifest), { mode: 0o600 });
+  assert.throws(() => assertSourceCurrent(ctx), /approved session source changed/);
 });
 
 test("a selected snapshot behind a symlinked parent directory is canonicalized and read", async () => {

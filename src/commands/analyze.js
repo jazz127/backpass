@@ -82,6 +82,7 @@ export async function runAnalysis(ctx) {
 async function runAnalysisCore(ctx) {
   const { repo, scope, config } = ctx;
   const { file, hash, skills } = primaryMemoryFile(repo, config, scope);
+  config.memoryFingerprint = hash;
   // Deterministic by design: tokens and units come from parsing the file, no model.
   const descriptionTokens = skillDescriptionTokens(skills);
   emitProgress("memory", {

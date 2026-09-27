@@ -7,6 +7,7 @@ import { renderEvidenceForPrompt } from "./fold.js";
 import { renderInstructionIndex, resolveMemoryPath } from "./memory.js";
 import { renderPrompt, render, loadPrompt } from "./prompts.js";
 import { buildProposal, effectiveMaxEdits, ProposalViolation, renderChangesForPrompt } from "./proposal.js";
+import { routeForPick } from "./provenance.js";
 import {
   loadProjectSkills,
   renderSkillIndex,
@@ -221,9 +222,16 @@ function targetRule(target, memoryPath, skillsDir, stagedTargetPath = null, unst
  * Everything the edit and annotation turns need: prompt values, the `buildProposal`
  * context, and the overflow target.
  */
-function synthesisSetup({ memoryFile, summary, config, repo, harnessCounts, scope = null }) {
+function synthesisSetup({ memoryFile, summary, config, repo, harnessCounts, scope = null, provenance = null }) {
   const state = config.state;
   const rejections = state.readRejections();
+  if (provenance?.source.kind === "external") {
+    rejections.entries = Object.fromEntries(
+      Object.entries(rejections.entries).filter(
+        ([, entry]) => JSON.stringify(entry.provenance) === JSON.stringify(provenance),
+      ),
+    );
+  }
   const userScope = scope?.kind === "user";
   const overflow = resolveOverflowTarget(repo.root, config.skillsDir, {
     claudeSkillsDir: userScope ? userClaudeSkillsDir() : undefined,
@@ -261,6 +269,7 @@ function synthesisSetup({ memoryFile, summary, config, repo, harnessCounts, scop
     isSuppressed: isSuppressedByRejection,
     skillFiles,
     target,
+    provenance,
   };
 
   const promptDir = path.join(state.root, "prompts");
@@ -502,6 +511,7 @@ export async function synthesizeProposal({
   transcripts,
   runNote = "",
   scope = null,
+  provenance = null,
 }) {
   config.state.clearProposal();
   const harnessCounts = harnessCountsOf(transcripts);
@@ -525,6 +535,7 @@ export async function synthesizeProposal({
     repo,
     harnessCounts,
     scope,
+    provenance,
   });
 
   // Staging holds only the write surface: every skill on a surface run, none of them on
@@ -650,6 +661,14 @@ export async function synthesizeProposal({
     holder.ranWith = current.agent;
     chosen = current;
     if (current !== pick) notes.push(`synthesis fell through to ${current.agent} (${current.model})`);
+    if (context.provenance?.source.kind === "external") {
+      const currentRoute = routeForPick(config, current);
+      if (JSON.stringify(currentRoute) !== JSON.stringify(context.provenance.routeProfile.synthesisResolved)) {
+        rejections.entries = {};
+        fs.writeFileSync(editPromptFile, renderPrompt("synthesis", { ...editValues, REJECTIONS: "(none)" }));
+      }
+      context.provenance.routeProfile.synthesisResolved = currentRoute;
+    }
     workspace = prepareWorkspace(workspaceOptions);
     progress("edit", { attempt: 1 });
     holder.session = await openSession({

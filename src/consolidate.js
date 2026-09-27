@@ -63,7 +63,7 @@ function firstMistake(entry) {
  * Returns `{ merged, usage }`, `{ skipped }`, or `{ failed }` - never throws for a
  * model-side failure, because a run without consolidation is still a valid run.
  */
-export async function consolidateGapLedger({ ledger, memoryPath, config, repo, modelCwd = null }) {
+export async function consolidateGapLedger({ ledger, memoryPath, config, repo, modelCwd = null, traceOnly = false }) {
   const entries = Object.values(ledger.entries).filter((e) => e.memoryPath === memoryPath);
   if (entries.length < MIN_ENTRIES) return { skipped: "fewer than two open gaps" };
   if (!config.agents) return { skipped: "no agent resolver" };
@@ -85,6 +85,7 @@ export async function consolidateGapLedger({ ledger, memoryPath, config, repo, m
         cwd: modelCwd || repo.root,
         timeoutSeconds: config.timeoutSeconds,
         promptRetries: config.promptRetries,
+        approveReads: !traceOnly,
       };
       return runModelCall(call, pick, {
         sessionName: () => `backpass-consolidate-${process.pid}-${++callCounter}`,

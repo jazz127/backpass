@@ -6,6 +6,7 @@ import { reviewInTerminal } from "../apply/terminal.js";
 import { openInBrowser } from "../apply/browser.js";
 import { budgetBar, formatTokens } from "../tokens.js";
 import { describeTarget } from "../target.js";
+import { assertSourceCurrent } from "../provenance.js";
 
 /**
  * The human gate. `backpass apply` is the only command that writes to the repo.
@@ -28,10 +29,18 @@ export async function cmdApply(ctx) {
   if (!proposal) {
     throw new UserError("no proposal to apply", "run `backpass` first to produce one");
   }
+  if (proposal.provenance?.source.kind === "external") assertSourceCurrent(ctx, proposal.provenance);
+  else if (ctx.sessionSource) throw new UserError("the saved proposal belongs to a different session source");
   const proposalScope = proposal.scope || "project";
   const runScope = ctx.scope?.kind || "project";
   if (proposalScope !== runScope) {
     throw new UserError(`this proposal is ${proposalScope} scope; run \`backpass apply --scope ${proposalScope}\``);
+  }
+  if (
+    !proposal.provenance &&
+    config.state.listEvidence().some((record) => record.transcript?.sourceKind === "external")
+  ) {
+    throw new UserError("the saved proposal lacks a session-source binding", "run analyze and propose again");
   }
   // A proposal carries its own target; the flag on apply may only restate it.
   const savedTarget = proposal.target || { kind: "surface" };
@@ -82,6 +91,8 @@ export async function cmdApply(ctx) {
 
   // Anything the reviewer never touched stays untouched.
   for (const id of editIds) if (!decisions[id]) decisions[id] = "skipped";
+
+  if (proposal.provenance?.source.kind === "external") assertSourceCurrent(ctx, proposal.provenance);
 
   const results = applyDecisions({
     proposal,

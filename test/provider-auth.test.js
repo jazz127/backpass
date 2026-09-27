@@ -153,6 +153,20 @@ test("provider auth state changes with credential files and environment keys", (
   assert.notEqual(providerAuthState("pi", { authFile, env: { OPENAI_API_KEY: "env-second" } }), changedFile);
 });
 
+test("Codex credential seats and auth revisions have distinct fingerprints", () => {
+  const root = tmpDir();
+  const firstSeat = path.join(root, "seat-a");
+  const secondSeat = path.join(root, "seat-b");
+  fs.mkdirSync(firstSeat);
+  fs.mkdirSync(secondSeat);
+  fs.writeFileSync(path.join(firstSeat, "auth.json"), JSON.stringify({ auth_mode: "chatgpt", token: "first" }));
+  fs.writeFileSync(path.join(secondSeat, "auth.json"), JSON.stringify({ auth_mode: "chatgpt", token: "second" }));
+  const first = providerAuthState("codex", { env: { CODEX_HOME: firstSeat }, homedir: root });
+  assert.notEqual(first, providerAuthState("codex", { env: { CODEX_HOME: secondSeat }, homedir: root }));
+  fs.writeFileSync(path.join(firstSeat, "auth.json"), JSON.stringify({ auth_mode: "chatgpt", token: "renewed" }));
+  assert.notEqual(first, providerAuthState("codex", { env: { CODEX_HOME: firstSeat }, homedir: root }));
+});
+
 test("codex, claude, grok, and cursor expose no auth-class map", () => {
   for (const agent of ["codex", "claude", "grok", "cursor"]) {
     assert.deepEqual(readProviderAuthTypes(agent, { advertised: ["gpt-5.6-luna", "openai/gpt-5.6-luna"] }), {});

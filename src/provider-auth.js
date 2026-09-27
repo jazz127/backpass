@@ -128,10 +128,15 @@ export function providerAuthState(agent, options = {}) {
         ? piAuthFilePath({ env, homedir })
         : agent === "opencode"
           ? opencodeAuthFilePath({ env, homedir })
-          : null
+          : agent === "codex"
+            ? path.join(env.CODEX_HOME || path.join(homedir, ".codex"), "auth.json")
+            : null
       : options.authFile;
   const hash = crypto.createHash("sha256");
   hash.update(`${agent}\0${file || ""}\0`);
+  for (const name of ["HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "PI_CODING_AGENT_DIR", "XDG_DATA_HOME"]) {
+    hash.update(`${name}\0${env[name] || ""}\0`);
+  }
   if (file) {
     try {
       hash.update(fs.readFileSync(file));

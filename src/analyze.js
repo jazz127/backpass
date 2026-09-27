@@ -8,8 +8,9 @@ import { readTranscript } from "./discovery/index.js";
 import { instructionUnits, renderInstructionIndex } from "./memory.js";
 import { renderSkillIndexForAnalysis } from "./skills.js";
 import { renderPrompt } from "./prompts.js";
-import { renderOpenGapIndex } from "./gap-ledger.js";
+import { filterGapLedger, renderOpenGapIndex } from "./gap-ledger.js";
 import { evidenceKey, isEvidenceFresh, safeFileName } from "./state.js";
+import { analysisRoute, routeForPick } from "./provenance.js";
 import { emitProgress } from "./progress.js";
 import { UserError, color, info, warn } from "./logger.js";
 import { transcriptIdentity } from "./transcript.js";
@@ -18,10 +19,9 @@ import { transcriptIdentity } from "./transcript.js";
  * Stage 1 of the pipeline (design section 3): one cheap model call per transcript,
  * fanned out over a small worker pool.
  *
- * Everything expensive is cached. Evidence is keyed to the transcript's content
- * signature AND the memory-surface hash it was judged against, so re-running after a
- * memory-file or skill-description change correctly re-analyzes against the new weights
- * while an unchanged surface is free.
+ * Everything expensive is cached. Evidence is keyed to source, content, policy,
+ * memory surface, resolved route, and credential seat. A changed boundary requires
+ * another judgment before evidence can be reused.
  */
 
 const MIN_ASSISTANT_TURNS = 4;
@@ -272,8 +272,10 @@ async function analyzeOne({
   fs.writeFileSync(promptFile, prompt);
 
   let ranWith = null;
+  let route = null;
   const result = await config.agents.withFallthrough("analysis", async (pick) => {
     ranWith = pick.agent;
+    route = routeForPick(config, pick);
     const call = {
       agent: pick.agent,
       model: pick.model,
@@ -281,6 +283,7 @@ async function analyzeOne({
       cwd: modelCwd || repo.root,
       timeoutSeconds: config.timeoutSeconds,
       promptRetries: config.promptRetries,
+      approveReads: raw.evidencePolicy !== "trace-only",
     };
     // Route effortful calls through a fresh per-transcript session so each harness's
     // invocation-scoped overlay or safe fallback is applied; otherwise one-shot is cheaper.
@@ -304,6 +307,7 @@ async function analyzeOne({
       raw.evidencePolicy,
     ),
     usage: usageRecord(ranWith, result),
+    route,
     distilled,
   };
 }
@@ -341,6 +345,7 @@ export async function analyzeTranscripts({
 }) {
   const state = config.state;
   const pending = [];
+  const cachedEvidence = [];
   const summary = {
     total: transcripts.length,
     cached: 0,
@@ -359,6 +364,10 @@ export async function analyzeTranscripts({
           sourceId: transcript.sourceId,
           sessionId: transcript.sessionId,
           revision: transcript.revision,
+          contentSignature: transcript.contentSignature,
+          snapshotDigest: transcript.snapshotDigest,
+          policyDigest: transcript.policyDigest,
+          screening: transcript.screening,
           sourceHostAlias: transcript.sourceHostAlias,
         }
       : {}),
@@ -377,14 +386,17 @@ export async function analyzeTranscripts({
     host: transcript.host || null,
   });
 
+  const route = await analysisRoute(config);
+
   for (const transcript of transcripts) {
     const existing = state.readEvidence(transcript);
-    if (!force && isEvidenceFresh(existing, transcript, memoryHash)) {
+    if (!force && isEvidenceFresh(existing, transcript, memoryHash, route)) {
       const updatedTranscript = { ...existing.transcript, ...transcriptMetadata(transcript) };
       if (JSON.stringify(existing.transcript) !== JSON.stringify(updatedTranscript)) {
         state.writeEvidence(transcript, { ...existing, transcript: updatedTranscript });
       }
       summary.cached += 1;
+      cachedEvidence.push(existing);
       continue;
     }
     // Distinguish "no prior evidence" from "prior evidence exists, but it was judged
@@ -435,7 +447,10 @@ export async function analyzeTranscripts({
   // gap id instead of coining a paraphrase of it (`matchesGap` in the reply schema), and
   // the skill index, so a mistake an existing skill's content covers is reported as a
   // failed trigger (`coveredBySkill`) instead of a brand-new gap.
-  const openGapIndex = renderOpenGapIndex(state.readGapLedger(), memoryFile.path);
+  const openGapIndex = renderOpenGapIndex(
+    filterGapLedger(state.readGapLedger(), cachedEvidence, transcripts),
+    memoryFile.path,
+  );
   const skillIndex = renderSkillIndexForAnalysis(
     modelCwd && path.resolve(modelCwd) !== path.resolve(repo.root)
       ? skills.map((skill) => ({
@@ -452,7 +467,7 @@ export async function analyzeTranscripts({
       transcript: transcriptMetadata(transcript),
       memoryHash,
       memoryPath: memoryFile.path,
-      key: evidenceKey(transcript, memoryHash),
+      key: evidenceKey(transcript, memoryHash, route),
       analyzedAt: new Date().toISOString(),
     };
 
@@ -479,6 +494,8 @@ export async function analyzeTranscripts({
         summary.skipped += 1;
         state.writeEvidence(transcript, { ...base, status: "skipped", reason: result.reason });
       } else {
+        base.key = evidenceKey(transcript, memoryHash, result.route);
+        base.route = result.route;
         summary.analyzed += 1;
         summary.usage.push(result.usage);
         state.writeEvidence(transcript, {

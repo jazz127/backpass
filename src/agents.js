@@ -3,6 +3,7 @@ import { DEFAULT_EFFORT, LEGACY_DEFAULT_AGENTS } from "./config.js";
 import { AcpxError, SESSION_CREATE_TIMEOUT_MS, acpxVersion, classifyAcpxFailure, probeSession } from "./acpx.js";
 import { ambiguousModelDetail, providerAuthState, rankCollidingIds, readProviderAuthTypes } from "./provider-auth.js";
 import { runCapture } from "./subprocess.js";
+import { sha256 } from "./state.js";
 
 /**
  * Ordered agent selection (the ordered-defaults design, section 8).
@@ -28,7 +29,8 @@ import { runCapture } from "./subprocess.js";
  *
  * Verdicts are cached in `.backpass/agent-probe-cache.json` (12h for ok, 30min for
  * negatives) and memoized for the run. An acpx version change invalidates every entry;
- * Pi and OpenCode entries are also keyed to credential environment and auth-file state.
+ * Probe keys include the source and memory context, effort, and a credential-seat
+ * fingerprint (`providerAuthState`) of the model the candidate resolves to.
  *
  * A busy harness (another backpass run, a wedged ACP session) looks like a probe
  * timeout, a bare `exit 1`, or an empty advertised-model list. Those retry once with
@@ -45,7 +47,6 @@ const PROBE_RETRY_BACKOFF_MS = 1_000;
 
 /** Adapters whose model list is open-ended: any id is forwarded, none can be verified. */
 const TRUSTING_MODEL_AGENTS = new Set(["claude"]);
-const PROVIDER_AUTH_SENSITIVE_AGENTS = new Set(["pi", "opencode"]);
 
 export const VERDICT_LABELS = {
   ok: "ok",
@@ -340,8 +341,14 @@ export class AgentResolver {
   }
 
   async verdictFor(candidate) {
-    const key = candidateKey(candidate);
-    if (this.memo.has(key)) return this.memo.get(key);
+    const key = this.probeKey(candidate);
+    const memo = this.memo.get(key);
+    if (
+      memo &&
+      memo.authState === this.credentialFingerprint(candidate, memo.resolvedModel) &&
+      memo.scope === this.probeScope()
+    )
+      return memo;
     if (this.inflight.has(key)) return this.inflight.get(key);
     const pending = this.probeAndRecord(candidate, key).finally(() => this.inflight.delete(key));
     this.inflight.set(key, pending);
@@ -351,11 +358,10 @@ export class AgentResolver {
   async probeAndRecord(candidate, key) {
     const cache = await this.loadCache();
     const cached = cache.entries[key];
-    const authState = PROVIDER_AUTH_SENSITIVE_AGENTS.has(candidate.agent)
-      ? this.providerAuthState(candidate.agent)
-      : null;
-    const authStateMatches = authState === null || cached?.authState === authState;
-    if (!this.bypassCache && authStateMatches && isProbeEntryFresh(cached, { now: this.now() })) {
+    const authStateMatches = cached?.authState === this.credentialFingerprint(candidate, cached?.resolvedModel);
+    const scopeMatches =
+      cached?.scope === undefined ? this.probeScope() === "native:::" : cached?.scope === this.probeScope();
+    if (!this.bypassCache && authStateMatches && scopeMatches && isProbeEntryFresh(cached, { now: this.now() })) {
       this.memo.set(key, { ...cached, cached: true });
       return this.memo.get(key);
     }
@@ -373,12 +379,14 @@ export class AgentResolver {
         sessionName: `backpass-probe-${process.pid}-${this.probeCount}`,
       });
     }
+    const authState = this.credentialFingerprint(candidate, result.resolvedModel);
     const entry = {
       verdict: result.verdict,
       detail: result.detail || "",
       resolvedModel: result.resolvedModel || null,
       checkedAt: new Date(this.now()).toISOString(),
       ...(authState === null ? {} : { authState }),
+      scope: this.probeScope(),
       ...(result.tieBreak ? { tieBreak: result.tieBreak } : {}),
     };
     this.memo.set(key, entry);
@@ -389,6 +397,20 @@ export class AgentResolver {
     }
     this.saveCache();
     return entry;
+  }
+
+  credentialFingerprint({ agent, model }, resolvedModel = null) {
+    return this.providerAuthState(agent, { model: resolvedModel || model });
+  }
+
+  probeScope() {
+    return `${this.config.sourceFingerprint || "native"}:${this.config.memoryFingerprint || ""}:${this.config.analysis?.effort || ""}:${this.config.synthesis?.effort || ""}`;
+  }
+
+  probeKey(candidate) {
+    const base = candidateKey(candidate);
+    if (!this.config.enforceEvidenceRoute) return base;
+    return `${base}:${sha256(`${this.probeScope()}:${this.credentialFingerprint(candidate)}`).slice(0, 24)}`;
   }
 
   /** The candidates for a role, in order, as `{ agent, model }`. */
@@ -485,16 +507,17 @@ export class AgentResolver {
    */
   async demote(role, pick, verdict, detail = "", stderr = "") {
     if (pick.pinned) return false;
-    const key = candidateKey({ agent: pick.agent, model: pick.ladderModel });
+    const key = this.probeKey({ agent: pick.agent, model: pick.ladderModel });
     if (this.memo.get(key)?.verdict === "ok") {
       // First worker to see the failure records it; the rest just re-resolve.
-      const authState = PROVIDER_AUTH_SENSITIVE_AGENTS.has(pick.agent) ? this.providerAuthState(pick.agent) : null;
+      const authState = this.credentialFingerprint({ agent: pick.agent, model: pick.ladderModel });
       const entry = {
         verdict,
         detail,
         resolvedModel: null,
         checkedAt: new Date(this.now()).toISOString(),
         ...(authState === null ? {} : { authState }),
+        scope: this.probeScope(),
         ...(stderr ? { stderr } : {}),
       };
       this.memo.set(key, entry);

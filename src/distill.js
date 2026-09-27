@@ -18,6 +18,7 @@ import { estimateTokens } from "./tokens.js";
 const TOOL_INPUT_CHARS = 160;
 const TOOL_OUTPUT_CHARS = 200;
 const MESSAGE_CHARS = 6000;
+export const DISTILLER_VERSION = 2;
 
 /** Returns [source-derived text, generated annotation]. */
 function oneLineParts(text, limit) {

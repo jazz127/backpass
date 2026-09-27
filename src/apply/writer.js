@@ -622,7 +622,7 @@ export function applyDecisions({ proposal, decisions, repo, state, config, dryRu
   // Rejections are remembered so the same edit is not re-proposed without new evidence.
   if (!dryRun && rejected.length) {
     const rejections = state.readRejections();
-    for (const edit of rejected) recordRejection(edit, rejections);
+    for (const edit of rejected) recordRejection(edit, rejections, new Date().toISOString(), proposal.provenance);
     state.writeRejections(rejections);
     results.rejectionsRecorded = true;
   }

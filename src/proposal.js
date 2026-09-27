@@ -333,6 +333,7 @@ export function buildProposal(rawResult, context) {
     skillFiles = [],
     scope = null,
     target = { kind: "surface" },
+    provenance = null,
   } = context;
 
   const violations = [];
@@ -771,6 +772,7 @@ export function buildProposal(rawResult, context) {
     repo: { name: repo.name, root: repo.root },
     scope: scope?.kind || "project",
     target,
+    provenance,
     memoryFile: { path: memoryFile.path, hash: memoryFile.hash, tokens: memoryFile.tokens },
     targetFiles,
     budget,

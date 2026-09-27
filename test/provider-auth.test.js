@@ -140,18 +140,88 @@ test("opencode auth types come from its auth.json, not Pi's openai=api_key defin
   assert.equal(ranked.id, "openai/gpt-5.6-luna");
 });
 
-test("provider auth state changes with credential files and environment keys", () => {
-  const dir = tmpDir();
-  const authFile = path.join(dir, "auth.json");
-  fs.writeFileSync(authFile, JSON.stringify({ openai: { type: "api_key", key: "first" } }));
-  const first = providerAuthState("pi", { authFile, env: { OPENAI_API_KEY: "env-first" } });
-  assert.equal(first, providerAuthState("pi", { authFile, env: { OPENAI_API_KEY: "env-first" } }));
-
-  fs.writeFileSync(authFile, JSON.stringify({ openai: { type: "api_key", key: "second" } }));
-  const changedFile = providerAuthState("pi", { authFile, env: { OPENAI_API_KEY: "env-first" } });
-  assert.notEqual(changedFile, first);
-  assert.notEqual(providerAuthState("pi", { authFile, env: { OPENAI_API_KEY: "env-second" } }), changedFile);
+test("credential seat ignores token refreshes and other providers' keys", () => {
+  const root = tmpDir();
+  const home = path.join(root, "codex");
+  fs.mkdirSync(home);
+  const authFile = path.join(home, "auth.json");
+  const write = (accountId, token) =>
+    fs.writeFileSync(
+      authFile,
+      JSON.stringify({ auth_mode: "chatgpt", tokens: { account_id: accountId, access_token: token } }),
+    );
+  write("acct-a", "first");
+  const env = { CODEX_HOME: home, OPENAI_API_KEY: "sk-a" };
+  const first = providerAuthState("codex", { env, homedir: root });
+  write("acct-a", "refreshed");
+  assert.equal(providerAuthState("codex", { env, homedir: root }), first);
+  assert.equal(providerAuthState("codex", { env: { ...env, ANTHROPIC_API_KEY: "other" }, homedir: root }), first);
+  assert.ok(!first.includes("sk-a"));
+  assert.notEqual(providerAuthState("codex", { env: { ...env, OPENAI_API_KEY: "sk-b" }, homedir: root }), first);
+  write("acct-b", "refreshed");
+  assert.notEqual(providerAuthState("codex", { env, homedir: root }), first);
+  assert.notEqual(
+    providerAuthState("codex", { env: { ...env, CODEX_HOME: path.join(root, "other") }, homedir: root }),
+    first,
+  );
 });
+
+test("claude credential seat follows its config dir and account", () => {
+  const root = tmpDir();
+  const seatA = path.join(root, "claude-a");
+  fs.mkdirSync(seatA);
+  const write = (accountUuid, token) =>
+    fs.writeFileSync(
+      path.join(seatA, ".claude.json"),
+      JSON.stringify({ oauthAccount: { accountUuid, emailAddress: `${accountUuid}@example.com` }, cachedToken: token }),
+    );
+  write("uuid-a", "one");
+  const env = { CLAUDE_CONFIG_DIR: seatA };
+  const first = providerAuthState("claude", { env, homedir: root });
+  write("uuid-a", "two");
+  assert.equal(providerAuthState("claude", { env, homedir: root }), first);
+  assert.equal(providerAuthState("claude", { env: { ...env, OPENAI_API_KEY: "other" }, homedir: root }), first);
+  write("uuid-b", "two");
+  assert.notEqual(providerAuthState("claude", { env, homedir: root }), first);
+  assert.notEqual(
+    providerAuthState("claude", { env: { CLAUDE_CONFIG_DIR: path.join(root, "claude-b") }, homedir: root }),
+    providerAuthState("claude", { env, homedir: root }),
+  );
+  assert.notEqual(providerAuthState("claude", { env: { ...env, ANTHROPIC_API_KEY: "sk-ant" }, homedir: root }), first);
+});
+
+for (const agent of ["pi", "opencode"]) {
+  test(`${agent} credential seat hashes only the selected provider's key`, () => {
+    const root = tmpDir();
+    const env = { PI_CODING_AGENT_DIR: path.join(root, "pi"), XDG_DATA_HOME: path.join(root, "data") };
+    const seat = (extra, model) => providerAuthState(agent, { env: { ...env, ...extra }, homedir: root, model });
+    const keys = { ANTHROPIC_API_KEY: "ant-a", OPENAI_API_KEY: "oai-a", GEMINI_API_KEY: "gem-a" };
+    const first = seat(keys, "anthropic/claude-luna");
+    assert.equal(seat({ ...keys, OPENAI_API_KEY: "oai-b", GEMINI_API_KEY: "gem-b" }, "anthropic/claude-luna"), first);
+    assert.notEqual(seat({ ...keys, ANTHROPIC_API_KEY: "ant-b" }, "anthropic/claude-luna"), first);
+
+    const noDefault = seat(keys, null);
+    assert.equal(seat({ ANTHROPIC_API_KEY: "ant-b", OPENAI_API_KEY: "oai-b" }, null), noDefault);
+
+    if (agent === "pi") {
+      fs.mkdirSync(env.PI_CODING_AGENT_DIR, { recursive: true });
+      fs.writeFileSync(
+        path.join(env.PI_CODING_AGENT_DIR, "settings.json"),
+        JSON.stringify({ defaultProvider: "openai" }),
+      );
+    } else {
+      fs.mkdirSync(path.join(root, ".config", "opencode"), { recursive: true });
+      fs.writeFileSync(
+        path.join(root, ".config", "opencode", "opencode.json"),
+        JSON.stringify({ model: "openai/gpt-5.6-luna" }),
+      );
+    }
+    const byDefault = seat(keys, null);
+    assert.equal(seat({ ...keys, ANTHROPIC_API_KEY: "ant-b" }, null), byDefault);
+    assert.notEqual(seat({ ...keys, OPENAI_API_KEY: "oai-b" }, null), byDefault);
+    assert.equal(seat({ ...keys, ANTHROPIC_API_KEY: "ant-b" }, "gpt-5.6-luna"), byDefault);
+  });
+}
 
 test("codex, claude, grok, and cursor expose no auth-class map", () => {
   for (const agent of ["codex", "claude", "grok", "cursor"]) {

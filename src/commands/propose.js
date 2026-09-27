@@ -1,6 +1,12 @@
 import { consolidateGapLedger } from "../consolidate.js";
 import { foldEvidence } from "../fold.js";
-import { ledgerGapObservations, pruneGapLedger, recordGapObservations } from "../gap-ledger.js";
+import {
+  filterGapLedger,
+  ledgerGapObservations,
+  mergeGapEntries,
+  pruneGapLedger,
+  recordGapObservations,
+} from "../gap-ledger.js";
 import { synthesizeProposal } from "../synthesize.js";
 import { ProposalViolation } from "../proposal.js";
 import { formatCorpusMix, INTERACTIVE, NON_INTERACTIVE } from "../interaction.js";
@@ -14,6 +20,7 @@ import { capTranscripts } from "../sample.js";
 import { isEvidenceFresh } from "../state.js";
 import { transcriptIdentity } from "../transcript.js";
 import { pruneHostCache } from "../discovery/cache.js";
+import { analysisRoute, assertSourceCurrent, proposalProvenance, routeForPick } from "../provenance.js";
 
 /**
  * Fold on-disk evidence for the memory surface. Gap sightings persist across runs, but
@@ -32,6 +39,10 @@ import { pruneHostCache } from "../discovery/cache.js";
 export async function foldForRun(ctx, memoryFile, memoryHash, skills = [], transcripts = []) {
   const { state, minGapEvidence, gapLedgerMaxAge } = ctx.config;
   const selectedByIdentity = new Map(transcripts.map((transcript) => [transcriptIdentity(transcript), transcript]));
+  const route =
+    ctx.sessionSource || transcripts.some((transcript) => transcript.sourceKind === "external")
+      ? await analysisRoute(ctx.config)
+      : null;
   const selected = new Set(selectedByIdentity.keys());
   const evidence = state.listEvidence();
   const identitiesByLegacyId = new Map();
@@ -55,12 +66,17 @@ export async function foldForRun(ctx, memoryFile, memoryHash, skills = [], trans
       e.memoryHash === memoryHash &&
       (e.transcript?.interaction === INTERACTIVE || e.transcript?.interaction === NON_INTERACTIVE) &&
       currentTranscript &&
-      isEvidenceFresh(e, currentTranscript, memoryHash)
+      isEvidenceFresh(e, currentTranscript, memoryHash, route)
     );
   });
 
+  const traceOnly =
+    Boolean(ctx.sessionSource) || transcripts.some((transcript) => transcript.sourceKind === "external");
   const ledger = state.readGapLedger();
   recordGapObservations(ledger, relevant, { skills });
+  const gapView = filterGapLedger(structuredClone(ledger), relevant, transcripts, {
+    sourceKind: traceOnly ? "external" : "native",
+  });
   // Consolidate after recording, so the pass sees this run's sightings too: two
   // sessions coining the same brand-new gap in one parallel fan-out can only line up
   // here. One bounded judged call; a failure degrades to lexical identity and the run
@@ -68,16 +84,20 @@ export async function foldForRun(ctx, memoryFile, memoryHash, skills = [], trans
   // Skills join the coverage check: a gap resolved by an extraction or a skill fix
   // retires instead of haunting the open-gap index until it expires.
   const consolidation = await consolidateGapLedger({
-    ledger,
+    ledger: gapView,
     memoryPath: memoryFile.path,
     config: ctx.config,
     repo: ctx.repo,
     modelCwd: ctx.scope?.modelCwd || ctx.repo?.root,
+    traceOnly,
   });
-  pruneGapLedger(ledger, { memoryFile, memoryPath: memoryFile.path, skills, maxAge: gapLedgerMaxAge });
+  if (!traceOnly && consolidation.merges) mergeGapEntries(ledger, consolidation.merges);
+  for (const target of [ledger, gapView]) {
+    pruneGapLedger(target, { memoryFile, memoryPath: memoryFile.path, skills, maxAge: gapLedgerMaxAge });
+  }
   state.writeGapLedger(ledger);
 
-  const gapObservations = ledgerGapObservations(ledger, memoryFile.path, skills).filter((observation) =>
+  const gapObservations = ledgerGapObservations(gapView, memoryFile.path, skills).filter((observation) =>
     selectedGapSessions.has(observation.sessionId),
   );
   const summary = foldEvidence(relevant, {
@@ -114,7 +134,17 @@ async function runProposalCore(ctx, precomputed) {
   // failures may leave an older proposal available to apply as if it came from this run.
   config.state.clearProposal();
   const { file, hash, skills } = precomputed || primaryMemoryFile(repo, config, ctx.scope);
+  config.memoryFingerprint = hash;
   const transcripts = precomputed?.transcripts || capTranscripts(await discoverForRun(ctx), config).transcripts;
+  assertSourceCurrent(ctx);
+  const current = primaryMemoryFile(repo, config, ctx.scope);
+  if (current.hash !== hash || current.file.hash !== file.hash) {
+    throw new UserError("the input memory surface changed during this run", "run analyze and propose again");
+  }
+  const provenance = proposalProvenance(ctx, transcripts, hash, ctx.sessionSource ? await analysisRoute(config) : null);
+  if (ctx.sessionSource) {
+    provenance.routeProfile.synthesisResolved = routeForPick(config, await config.agents.resolve("synthesis"));
+  }
 
   const foldStarted = Date.now();
   const summary = await foldForRun(ctx, file, hash, skills ?? [], transcripts);
@@ -142,8 +172,32 @@ async function runProposalCore(ctx, precomputed) {
     repo,
     transcripts,
     scope: ctx.scope,
+    provenance,
   });
 
+  try {
+    assertSourceCurrent(ctx);
+    const latest = primaryMemoryFile(repo, config, ctx.scope);
+    if (latest.hash !== hash || latest.file.hash !== file.hash) {
+      throw new UserError("the input memory surface changed during synthesis", "run analyze and propose again");
+    }
+    if (ctx.sessionSource) {
+      const currentAnalysis = await analysisRoute(config);
+      const currentSynthesis = routeForPick(config, await config.agents.resolve("synthesis"));
+      if (
+        JSON.stringify(currentAnalysis) !== JSON.stringify(provenance.routeProfile.analysis) ||
+        JSON.stringify(currentSynthesis) !== JSON.stringify(provenance.routeProfile.synthesisResolved)
+      ) {
+        throw new UserError(
+          "the model route or credential seat changed during synthesis",
+          "run analyze and propose again",
+        );
+      }
+    }
+  } catch (error) {
+    config.state.clearProposal();
+    throw error;
+  }
   accountForConsolidationUsage(proposal, summary);
   config.state.writeProposal(proposal);
   return { proposal, summary, memoryFile: file };

@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { parseManifest, validateManifest } from "./external-session-source.js";
+import { digest, parseManifest, validateManifest } from "./external-session-source.js";
 
 const MANIFEST_LIMIT = 1_048_576;
 const SESSION_LIMIT = 2_097_152;
@@ -138,6 +138,11 @@ export function discover(snapshot) {
       timeBasis: payload.timeBasis,
       bytes: entry.byteLength,
       contentSignature: entry.sha256,
+      traceDigest: digest(
+        payload.events.map((event) =>
+          Object.fromEntries(Object.entries(event).filter(([key]) => key !== "eventId" && key !== "sourceRefs")),
+        ),
+      ),
       association: payload.association,
       title: payload.context.title || null,
       gitBranch: payload.context.branch || null,

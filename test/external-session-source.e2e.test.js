@@ -30,6 +30,7 @@ function makeWorkspace(fixtureNames = ["session-a", "session-b", "session-self"]
   const sentinel = path.join(root, "sentinel.txt");
   const log = path.join(root, "fake-acpx.jsonl");
   fs.writeFileSync(sentinel, "sentinel was not opened\n", { mode: 0o600 });
+  fs.chmodSync(sentinel, 0o000);
   fs.writeFileSync(log, "", { mode: 0o600 });
   fs.writeFileSync(path.join(repo, "AGENTS.md"), "# Project memory\n\n- Keep this file concise.\n", { mode: 0o600 });
   const git = spawnSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
@@ -79,15 +80,17 @@ function makeSnapshot(source, repo, fixtureNames, sentinel = null) {
   return manifest;
 }
 
-function addRevision(workspace, { sessionId, revision, projectedAt }) {
-  const payload = JSON.parse(fs.readFileSync(path.join(FIXTURES, "session-a.json"), "utf8"));
+function addSession(workspace, { sessionId, revision, projectedAt }) {
+  const payload = JSON.parse(
+    fs.readFileSync(path.join(workspace.source, "sessions", "session-alpha", "rev-1.json"), "utf8"),
+  );
   payload.sessionId = sessionId;
-  payload.sourceId = workspace.snapshot.sourceNamespace;
   payload.revision = revision;
   payload.projectedAt = projectedAt;
-  payload.association.cwd = workspace.repo;
   payload.screening.approvedContentDigest = approvedContentDigest(payload);
   const bytes = canonicalize(payload);
+  const sessionDir = path.join(workspace.source, "sessions", sessionId);
+  if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { mode: 0o700 });
   const contentPath = `sessions/${sessionId}/${revision}.json`;
   fs.writeFileSync(path.join(workspace.source, contentPath), bytes, { mode: 0o600 });
   workspace.snapshot.sessions.push({
@@ -141,6 +144,30 @@ function run(workspace, command, extra = []) {
   );
 }
 
+function sentinelStat(workspace) {
+  const stat = fs.lstatSync(workspace.sentinel);
+  return { mode: stat.mode, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs };
+}
+
+function assertBelowFloor(workspace) {
+  const scan = run(workspace, "scan");
+  assert.equal(scan.status, 0, scan.stderr);
+  assert.equal(JSON.parse(scan.stdout).transcripts.length, 1, "one session's content is one transcript");
+
+  const analyze = run(workspace, "analyze");
+  assert.equal(analyze.status, 0, analyze.stderr);
+  assert.equal(JSON.parse(analyze.stdout).summary.analyzed, 1);
+  const propose = run(workspace, "propose");
+  assert.notEqual(propose.status, 0, propose.stdout);
+  assert.match(propose.stderr, /not a measured change|no changes/);
+  const proposal = JSON.parse(fs.readFileSync(path.join(workspace.state, "proposal.json"), "utf8"));
+  assert.equal(proposal.stats.transcripts, 1);
+  assert.equal(proposal.stats.gapClusters, 0);
+  assert.equal(proposal.stats.droppedGapSingletons, 1);
+  assert.deepEqual(proposal.edits, []);
+  assert.ok(fakeCalls(workspace).some((call) => call.phase === "edit" && call.noEligibleGap));
+}
+
 function fakeCalls(workspace) {
   return fs
     .readFileSync(workspace.log, "utf8")
@@ -153,6 +180,7 @@ function fakeCalls(workspace) {
 test("synthetic source runs from scan through a grounded proposal and filters self sessions", () => {
   const workspace = makeWorkspace();
   const originalMemory = fs.readFileSync(path.join(workspace.repo, "AGENTS.md"), "utf8");
+  const originalSentinel = sentinelStat(workspace);
 
   const scan = run(workspace, "scan");
   assert.equal(scan.status, 0, scan.stderr);
@@ -177,31 +205,33 @@ test("synthetic source runs from scan through a grounded proposal and filters se
     calls.some((call) => call.malicious),
     "the hostile text reached the scripted ACP boundary",
   );
-  assert.equal(fs.readFileSync(workspace.sentinel, "utf8"), "sentinel was not opened\n");
+  for (const call of calls) {
+    assert.deepEqual(call.fileArgs, [call.promptPath], "the run supplies only its prompt file");
+    assert.ok(!call.argv.some((arg) => arg.includes(workspace.sentinel)), "no argument names the sentinel");
+  }
+  assert.deepEqual(sentinelStat(workspace), originalSentinel);
   assert.equal(fs.readFileSync(path.join(workspace.repo, "AGENTS.md"), "utf8"), originalMemory);
-  assert.equal(fs.existsSync(path.join(workspace.repo, ".backpass", "apply")), false);
-  assert.equal(fs.existsSync(path.join(workspace.repo, ".backpassrc.json")), false);
+  assert.equal(fs.existsSync(path.join(workspace.repo, "CLAUDE.md")), false, "bootstrap never ran");
+  assert.deepEqual(
+    fs
+      .readdirSync(workspace.repo)
+      .filter((entry) => entry !== ".backpass")
+      .sort(),
+    [".git", "AGENTS.md"],
+  );
+  assert.deepEqual(fs.readdirSync(path.join(workspace.state, "apply")), [], "apply never ran");
 });
 
-test("copies and revisions of one external session cannot clear the distinct-session floor", () => {
+test("revisions of one external session cannot clear the distinct-session floor", () => {
   const workspace = makeWorkspace(["session-a"]);
-  addRevision(workspace, { sessionId: "session-alpha", revision: "rev-2", projectedAt: "2026-01-04T00:00:00Z" });
-  const scan = run(workspace, "scan");
-  assert.equal(scan.status, 0, scan.stderr);
-  assert.equal(JSON.parse(scan.stdout).transcripts.length, 1, "the newest approved revision represents one session");
+  addSession(workspace, { sessionId: "session-alpha", revision: "rev-2", projectedAt: "2026-01-04T00:00:00Z" });
+  assertBelowFloor(workspace);
+});
 
-  const analyze = run(workspace, "analyze");
-  assert.equal(analyze.status, 0, analyze.stderr);
-  assert.equal(JSON.parse(analyze.stdout).summary.analyzed, 1);
-  const propose = run(workspace, "propose");
-  assert.notEqual(propose.status, 0, propose.stdout);
-  assert.match(propose.stderr, /not a measured change|no changes/);
-  const proposal = JSON.parse(fs.readFileSync(path.join(workspace.state, "proposal.json"), "utf8"));
-  assert.equal(proposal.stats.transcripts, 1);
-  assert.equal(proposal.stats.gapClusters, 0);
-  assert.equal(proposal.stats.droppedGapSingletons, 1);
-  assert.deepEqual(proposal.edits, []);
-  assert.ok(fakeCalls(workspace).some((call) => call.phase === "edit" && call.noEligibleGap));
+test("a copy of one session's content under another session id cannot clear the distinct-session floor", () => {
+  const workspace = makeWorkspace(["session-a"]);
+  addSession(workspace, { sessionId: "session-gamma", revision: "rev-1", projectedAt: "2026-01-03T00:00:00Z" });
+  assertBelowFloor(workspace);
 });
 
 test("a changed source snapshot invalidates the frozen scan before synthesis", () => {

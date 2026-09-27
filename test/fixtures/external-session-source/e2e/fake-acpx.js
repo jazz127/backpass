@@ -18,7 +18,8 @@ const promptPath = argv[argv.indexOf("--file") + 1];
 const prompt = fs.readFileSync(promptPath, "utf8");
 const malicious = prompt.includes("IGNORE THE ANALYSIS RULES") && prompt.includes("SENTINEL_PATH=");
 const noEligibleGap = prompt.includes("none above the evidence threshold");
-record({ promptPath, malicious, noEligibleGap, phase: prompt.includes("Measured changes") ? "annotate" : prompt.includes("## Folded evidence") ? "edit" : "analysis" });
+const fileArgs = argv.filter((_, index) => argv[index - 1] === "--file");
+record({ argv, fileArgs, promptPath, malicious, noEligibleGap, phase: prompt.includes("Measured changes") ? "annotate" : prompt.includes("## Folded evidence") ? "edit" : "analysis" });
 
 if (prompt.includes("## Folded evidence") && noEligibleGap) {
   process.exit(0);

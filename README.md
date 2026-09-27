@@ -288,6 +288,9 @@ current user and private, with regular files without hard links and no symlinks.
 cwd, git root, and remotes go through the same association tiers. Its origin harness
 remains visible in the corpus mix, while its source identity stays stable when the
 snapshot directory moves.
+Only the latest revision of each session is collected, and sessions whose screened events
+match (ignoring event ids and source references) are kept once, so a copy republished under
+another session id counts as a single session toward evidence floors.
 Analysis of selected-source sessions uses only the screened trace. Its prompt offers
 abstention when retained events do not support a claim, and evidence quotes must match
 one retained event; stored citations include the approved revision, event, span, and

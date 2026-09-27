@@ -202,6 +202,7 @@ function discoverExternalTranscripts({ repo, scope = null, config, strict = fals
   const transcripts = [];
   const perHarness = {};
   const identities = new Set();
+  const traceDigests = new Set();
   const userFilter = scope?.kind === "user";
 
   for (const descriptor of snapshot.descriptors) {
@@ -271,8 +272,9 @@ function discoverExternalTranscripts({ repo, scope = null, config, strict = fals
       stats.skipped += 1;
       continue;
     }
-    if (identities.has(transcript.identity)) continue;
+    if (identities.has(transcript.identity) || traceDigests.has(descriptor.traceDigest)) continue;
     identities.add(transcript.identity);
+    traceDigests.add(descriptor.traceDigest);
     fileSource.bind(transcript, descriptor);
     transcripts.push(transcript);
     stats.matched += 1;

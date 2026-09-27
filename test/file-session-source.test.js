@@ -180,6 +180,7 @@ test("an unknown interaction class falls back to cwd classification", async () =
   });
   const result = await discoverTranscripts({ repo, scope: projectScope(repo), config: config(), sessionSource: root });
   assert.equal(result.transcripts.length, 1);
+  assert.equal(result.transcripts[0].interaction, "non-interactive");
   assert.equal(classifyInteraction(result.transcripts[0]), "non-interactive");
 });
 
@@ -190,8 +191,12 @@ test("a trace-only session's distilled trace never points at a raw transcript", 
   });
   const result = await discoverTranscripts({ repo, scope: projectScope(repo), config: config(), sessionSource: root });
   const read = await readTranscript(result.transcripts[0]);
-  const { trace } = distill(read.events, { ...result.transcripts[0], rawPath: read.rawPath });
+  const meta = { ...result.transcripts[0], rawPath: read.rawPath };
+  const { trace } = distill(read.events, meta);
   assert.doesNotMatch(trace, /raw transcript/);
+  const long = distill(read.events, meta, { maxTraceTokens: 5 });
+  assert.equal(long.stats.elided, true);
+  assert.doesNotMatch(long.trace, /raw transcript/);
 });
 
 test("a projected self session is excluded even when its marker was missed", async () => {

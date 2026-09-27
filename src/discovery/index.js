@@ -264,6 +264,7 @@ function discoverExternalTranscripts({ repo, scope = null, config, strict = fals
       screening: descriptor.screening,
     };
     transcript.identity = transcriptIdentity(transcript);
+    transcript.interaction = classifyInteraction(transcript);
     if (userFilter && !passesProjectFilter(transcript, config)) {
       stats.skipped += 1;
       continue;

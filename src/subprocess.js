@@ -29,6 +29,12 @@ export function currentChildEnvironmentMode() {
   return childEnvironmentMode.getStore()?.mode || "native";
 }
 
+/** The environment a child spawned now would inherit, before any per-spawn overlay. */
+export function currentChildEnvironment() {
+  const store = childEnvironmentMode.getStore();
+  return buildChildEnvironment({ ...store?.explicitEnv }, { mode: currentChildEnvironmentMode() });
+}
+
 export function buildChildEnvironment(overlay, { mode = "native", parent = process.env } = {}) {
   if (mode === "native") return overlay ? { ...parent, ...overlay } : undefined;
   if (mode !== "restricted") throw new Error(`unknown child environment mode ${mode}`);

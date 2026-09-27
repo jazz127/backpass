@@ -12,6 +12,8 @@ import {
 import { AcpxError, acpxAgentName, classifyAcpxFailure, effortOptionKey, probeSession } from "../src/acpx.js";
 import { DEFAULT_LADDERS, loadConfig } from "../src/config.js";
 import { UserError, setLoggerSink, setQuiet } from "../src/logger.js";
+import { providerAuthState as realProviderAuthState } from "../src/provider-auth.js";
+import { withChildEnvironment } from "../src/subprocess.js";
 
 setQuiet(true);
 
@@ -361,6 +363,36 @@ test("a bare ladder model re-probes when its resolved provider's key changes", a
   const rotated = resolverWith(verdicts, { config, state: first.state, providerAuthState });
   await rotated.resolver.resolve("analysis");
   assert.deepEqual(rotated.calls, ["pi|gpt-5.6-luna"], "the resolved provider's key re-probes");
+});
+
+test("restricted child-env probes neither reuse nor replace native verdicts", async () => {
+  const providerAuthState = () => "seat";
+  const verdicts = { "pi|gpt-5.6-luna": { resolvedModel: "openai/gpt-5.6-luna" } };
+  const native = resolverWith(verdicts, { providerAuthState });
+  await native.resolver.resolve("analysis");
+  assert.deepEqual(native.calls, ["pi|gpt-5.6-luna"]);
+
+  const restricted = resolverWith(verdicts, { state: native.state, providerAuthState });
+  await withChildEnvironment("restricted", () => restricted.resolver.resolve("analysis"));
+  assert.deepEqual(restricted.calls, ["pi|gpt-5.6-luna"], "a native verdict is not reused in restricted mode");
+
+  const again = resolverWith(verdicts, { state: native.state, providerAuthState });
+  await again.resolver.resolve("analysis");
+  assert.deepEqual(again.calls, ["pi|gpt-5.6-luna"], "a restricted verdict is not reused natively");
+});
+
+test("credential seats are fingerprinted from the child's environment", () => {
+  const saved = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "sk-parent";
+  try {
+    const native = realProviderAuthState("codex");
+    const restricted = withChildEnvironment("restricted", () => realProviderAuthState("codex"));
+    assert.notEqual(restricted, native);
+    assert.equal(restricted, realProviderAuthState("codex", { env: {} }));
+  } finally {
+    if (saved === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = saved;
+  }
 });
 
 test("AUTH_REQUIRED mid-run falls through to the next candidate", async () => {

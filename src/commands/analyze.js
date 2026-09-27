@@ -11,6 +11,7 @@ import { printUsage } from "./usage.js";
 import { capTranscripts } from "../sample.js";
 import { prefetchRemoteTranscripts } from "../discovery/hosts.js";
 import { pruneHostCache } from "../discovery/cache.js";
+import { checkRunContext } from "../run-context.js";
 
 /**
  * The memory file a run optimizes: the first configured file that exists (AGENTS.md by
@@ -82,6 +83,7 @@ export async function runAnalysis(ctx) {
 async function runAnalysisCore(ctx) {
   const { repo, scope, config } = ctx;
   const { file, hash, skills } = primaryMemoryFile(repo, config, scope);
+  config.memoryFingerprint = hash;
   // Deterministic by design: tokens and units come from parsing the file, no model.
   const descriptionTokens = skillDescriptionTokens(skills);
   emitProgress("memory", {
@@ -93,6 +95,7 @@ async function runAnalysisCore(ctx) {
   });
   // The cap bounds the expensive per-transcript calls; cached evidence is reused as usual.
   const { transcripts, perHarness } = capTranscripts(await discoverForRun(ctx), config);
+  checkRunContext(ctx, transcripts, { start: ctx.commandName === "run" });
 
   if (!transcripts.length) {
     info(`${color.yellow("·")} no transcripts associated with this ${scope?.kind === "user" ? "user" : "repo"}`);
@@ -110,6 +113,7 @@ async function runAnalysisCore(ctx) {
     force: Boolean(ctx.flags.force),
     prefetch: (pending) => prefetchRemoteTranscripts(pending, { config }),
   });
+  checkRunContext(ctx, transcripts);
 
   return { file, hash, skills, transcripts, perHarness, summary };
 }

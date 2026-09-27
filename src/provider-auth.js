@@ -3,6 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { currentChildEnvironment } from "./subprocess.js";
+
 /**
  * Auth-class signals for advertised-model tie-breaks (`resolveModelId` in `src/agents.js`).
  *
@@ -120,32 +122,81 @@ export function opencodeAuthFilePath({ env = process.env, homedir = os.homedir()
   return path.join(base, "opencode", "auth.json");
 }
 
+const PROVIDER_KEY_ENV = {
+  anthropic: "ANTHROPIC_API_KEY",
+  openai: "OPENAI_API_KEY",
+  google: "GEMINI_API_KEY",
+  gemini: "GEMINI_API_KEY",
+  xai: "XAI_API_KEY",
+  openrouter: "OPENROUTER_API_KEY",
+};
+
+/** Provider a pi/opencode pick runs on: its model prefix, else the harness's configured default. */
+function selectedProvider(agent, model, { env, homedir, home }) {
+  const prefix = providerOf(model || "");
+  if (PROVIDER_KEY_ENV[prefix]) return prefix;
+  if (agent === "pi") return readJsonObject(path.join(home, "settings.json"))?.defaultProvider;
+  const xdg = typeof env.XDG_CONFIG_HOME === "string" && env.XDG_CONFIG_HOME.trim();
+  const config = readJsonObject(path.join(xdg || path.join(homedir, ".config"), "opencode", "opencode.json"));
+  return typeof config?.model === "string" ? providerOf(config.model) : null;
+}
+
+/** Where each harness keeps its credentials, the file naming its account, and the key env it reads. */
+function credentialSeat(agent, model, { env, homedir }) {
+  const dir = (name, fallback) => (typeof env[name] === "string" && env[name].trim() ? env[name].trim() : fallback);
+  if (agent === "codex") {
+    const home = dir("CODEX_HOME", path.join(homedir, ".codex"));
+    return { home, accountFile: path.join(home, "auth.json"), keyEnv: ["OPENAI_API_KEY", "CODEX_API_KEY"] };
+  }
+  if (agent === "claude") {
+    const override = dir("CLAUDE_CONFIG_DIR", "");
+    return {
+      home: override || path.join(homedir, ".claude"),
+      accountFile: override ? path.join(override, ".claude.json") : path.join(homedir, ".claude.json"),
+      keyEnv: ["ANTHROPIC_API_KEY"],
+    };
+  }
+  if (agent === "pi" || agent === "opencode") {
+    const accountFile = agent === "pi" ? piAuthFilePath({ env, homedir }) : opencodeAuthFilePath({ env, homedir });
+    const home = path.dirname(accountFile);
+    const keyEnv = PROVIDER_KEY_ENV[selectedProvider(agent, model, { env, homedir, home })];
+    return { home, accountFile, keyEnv: keyEnv ? [keyEnv] : [] };
+  }
+  if (agent === "grok") return { home: path.join(homedir, ".grok"), accountFile: null, keyEnv: ["XAI_API_KEY"] };
+  if (agent === "cursor") return { home: path.join(homedir, ".cursor"), accountFile: null, keyEnv: ["CURSOR_API_KEY"] };
+  return { home: null, accountFile: null, keyEnv: [] };
+}
+
+const ACCOUNT_FIELDS = new Set(["account_id", "accountId", "accountUuid", "email", "emailAddress"]);
+
+/** Stable account identifiers (`path=value`) in a credential file; tokens and keys are never read. */
+function accountIdentifiers(value, prefix = "", depth = 0) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || depth > 3) return [];
+  return Object.entries(value).flatMap(([key, child]) =>
+    ACCOUNT_FIELDS.has(key) && (typeof child === "string" || typeof child === "number")
+      ? [`${prefix}${key}=${child}`]
+      : accountIdentifiers(child, `${prefix}${key}.`, depth + 1),
+  );
+}
+
+/**
+ * Fingerprint of the credential seat one harness runs under: its credential home, the
+ * account identifiers readable from its local credential file, and a hash of the API-key
+ * env var of the provider that harness runs `model` on. Token refreshes and other providers'
+ * keys leave it stable; with no readable account id the credential home is the seat.
+ */
 export function providerAuthState(agent, options = {}) {
-  const { env = process.env, homedir = os.homedir() } = options;
-  const file =
-    options.authFile === undefined
-      ? agent === "pi"
-        ? piAuthFilePath({ env, homedir })
-        : agent === "opencode"
-          ? opencodeAuthFilePath({ env, homedir })
-          : null
-      : options.authFile;
+  const { env = currentChildEnvironment(), homedir = os.homedir(), model = null } = options;
+  const seat = credentialSeat(agent, model, { env, homedir });
   const hash = crypto.createHash("sha256");
-  hash.update(`${agent}\0${file || ""}\0`);
-  if (file) {
-    try {
-      hash.update(fs.readFileSync(file));
-    } catch {
-      hash.update("missing");
+  hash.update(`${agent}\0${seat.home || ""}\0`);
+  const account = seat.accountFile ? readJsonObject(seat.accountFile) : null;
+  for (const id of accountIdentifiers(account).sort()) hash.update(`\0${id}`);
+  for (const name of seat.keyEnv) {
+    if (typeof env[name] === "string" && env[name]) {
+      hash.update(`\0${name}\0${crypto.createHash("sha256").update(env[name]).digest("hex")}`);
     }
   }
-  const credentialEnv = Object.entries(env)
-    .filter(
-      ([name, value]) =>
-        typeof value === "string" && /(?:^|_)(?:API_KEY|ACCESS_TOKEN|AUTH_TOKEN|SECRET_ACCESS_KEY)$/.test(name),
-    )
-    .sort(([left], [right]) => left.localeCompare(right));
-  for (const [name, value] of credentialEnv) hash.update(`\0${name}\0${value}`);
   return hash.digest("hex");
 }
 
@@ -158,7 +209,7 @@ export function providerAuthState(agent, options = {}) {
  * @returns {Record<string, AuthClass>}
  */
 export function readProviderAuthTypes(agent, options = {}) {
-  const { env = process.env, homedir = os.homedir() } = options;
+  const { env = currentChildEnvironment(), homedir = os.homedir() } = options;
   /** @type {Record<string, AuthClass>} */
   const types = {};
   if (agent === "pi") Object.assign(types, PI_PROVIDER_AUTH_MODE);

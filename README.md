@@ -99,6 +99,26 @@ State lives in `$XDG_CONFIG_HOME/backpass/user/` (default
 `.backpass/`. User-scope evidence, ledgers, proposals, and apply surfaces stay in
 that one directory.
 
+Use `--state-dir <dir>` with `scan`, `analyze`, `propose`, `status`, and `apply` to
+keep a run in a dedicated private state directory. Run `scan` first, then pass the
+same directory and scope to each later command. The scan pins the source snapshot,
+selected corpus, and an inventory of the exact memory and skill file bytes and
+resolved pointer targets. `analyze` and `propose` refuse changed inputs; `apply`
+checks the saved inventory again. A new `scan` starts a new run in that directory.
+The directory is owner-only (0700), and Backpass refuses links in the path (other than
+root-owned system links above your own directories, such as macOS `/tmp`), permissive
+permissions, or reuse for a different scope or repository. The default state paths
+continue to work as before.
+
+`--child-env restricted` starts probes and model children with a minimal environment
+containing runtime basics such as `PATH`, `HOME`, and temporary-directory settings.
+Inherited provider credentials, endpoints, MCP settings, and plugin roots are omitted;
+an embedding runner can add explicitly approved variables through the child-environment
+hook. This mode also rejects memory pointers to files outside the configured memory
+surface. The default child environment remains the native inherited environment.
+`--prompt-retries <n>` and `--timeout <seconds>` override their configured values for
+one command only; neither flag changes a config file or harness default.
+
 Harness load paths, verified for v1:
 
 - **Claude Code** loads `CLAUDE.md` from `CLAUDE_CONFIG_DIR` (default `~/.claude`)
@@ -260,7 +280,7 @@ the same tiers, sample and cap - see [Your other machines](#your-other-machines)
 
 To select a normalized `external-session-source/v1` snapshot instead, pass
 `--session-source <snapshot-directory-or-manifest>` to `scan`, `analyze`, `propose`,
-`status`, or the default run. Selection is exclusive: no local harness stores or SSH
+`status`, `apply`, or the default run. Selection is exclusive: no local harness stores or SSH
 hosts are scanned. `--session-source-mode exclusive` makes that choice explicit; other
 modes are unsupported. A malformed or unsafe selected snapshot fails the run by name.
 The selected path is resolved once; everything inside the snapshot must be owned by the
@@ -268,6 +288,20 @@ current user and private, with regular files without hard links and no symlinks.
 cwd, git root, and remotes go through the same association tiers. Its origin harness
 remains visible in the corpus mix, while its source identity stays stable when the
 snapshot directory moves.
+Only the latest revision of each session is collected, and sessions whose screened events
+match (ignoring event ids and source references) are kept once, so a copy republished under
+another session id counts as a single session toward evidence floors.
+Analysis of selected-source sessions uses only the screened trace. Its prompt offers
+abstention when retained events do not support a claim, and evidence quotes must match
+one retained event; stored citations include the approved revision, event, span, and
+opaque source references. Native transcript analysis retains its existing behavior.
+A proposal built from a selected source records that source's snapshot digest, and
+`apply` refuses it unless the same unchanged snapshot is passed again with
+`--session-source`.
+For quote matching, runs of whitespace fold to one space and leading/trailing
+whitespace is ignored; spans still point into the rendered event field. A quote that
+overlaps text the distiller added (truncation markers, output-size notes, redaction
+placeholders) is rejected, and a reported raw-transcript read fails the analysis.
 
 Collection is incremental. Codex alone can hold 10,000+ rollouts, so verdicts are cached in
 `.backpass/scan-cache.json` by path, mtime and size - re-scans cost only the new files.
@@ -338,9 +372,10 @@ coining a paraphrase of it.
 items are discarded - the single most important defence against a model confabulating
 influence - and so are quotes that do not actually appear in the distilled trace they claim
 to come from, compared whitespace-folded so the trace's line wrapping never rejects a real
-quote. A paraphrase is a claim without evidence. The check is skipped only when the analysis
-reports `usedRawTranscript`, because then the quote may legitimately come from text the
-distiller truncated or elided. When a run discards quotes this way it says so on stderr:
+quote. A paraphrase is a claim without evidence. For native transcripts, the check is
+skipped only when the analysis reports `usedRawTranscript`, because then the quote may
+legitimately come from text the distiller truncated or elided; selected-source sessions
+never skip it (see [Collect samples](#1-collect-samples---which-sessions-belong-to-this-repo)). When a run discards quotes this way it says so on stderr:
 a model that paraphrases instead of copying produces fewer findings, not cleaner ones.
 Negative evidence is weighted highest, but its class determines what it supports:
 non-compliance supports reinforcement, while only harm supports removal.
@@ -353,7 +388,9 @@ draw repeated non-compliance, synthesis is steered to restructure the paragraph 
 items instead of adding a cosmetic label.
 
 Results are cached per transcript, keyed to the transcript's content, the effective
-memory-surface hash, and the analysis-index version. The surface hash covers the memory-file
+memory-surface hash, and the analysis-index version, plus the distiller version, a
+selected source's snapshot, revision, and screening policy, and the analysis route (agent,
+model, effort, and credential-seat fingerprint). The surface hash covers the memory-file
 set plus every project skill's name and description. Edit a memory file or skill description
 and the evidence correctly re-computes; edit only a skill body and the cache remains valid
 because bodies are inspected only for failed-trigger confirmation. A repo without skills
@@ -394,7 +431,7 @@ majority-excluded cluster, including a pure-orchestration cluster, remains clear
 as a report-only diagnostic rather than becoming an instruction in the project's memory
 file; an uncorroborated pure-orchestration singleton stays hidden.
 
-Only evidence with the current transcript, memory-surface, and analysis-index cache key,
+Only evidence whose full cache key (above) is current,
 stamped with one of the two interaction categories, and belonging to this run's selected
 sample is folded into a proposal. A transcript that fell outside the time window or
 `maxTranscripts` cap, disappeared, or still has legacy evidence can leave an evidence file
@@ -653,9 +690,11 @@ because its adapter accepts sessions while logged out). Session creation may wai
 minutes for a cold-starting adapter; the remaining probe operations retain their shorter
 10-20 second limits. A potentially transient busy-harness miss retries once and is not cached;
 durable verdicts are cached in
-`.backpass/agent-probe-cache.json` for 12h (30min for negatives). Pi and OpenCode entries
-are re-probed when their credential or auth-file state changes; `--force` re-probes every
-entry. The probe is a filter, not a promise: if the chosen harness answers `AUTH_REQUIRED`,
+`.backpass/agent-probe-cache.json` for 12h (30min for negatives). An entry is re-probed
+when the session source, memory surface, effort, or `--child-env` mode changes, or when its harness's
+credential seat (credential home, account identity, or the selected provider's API key)
+changes; `--force` re-probes every entry. The probe is a filter, not a promise: if the
+chosen harness answers `AUTH_REQUIRED`,
 rejects the model, or returns a clean exit with no output at all (a provider account out
 of quota or credits, often swallowed before it reaches stderr) mid-run, backpass falls
 through to the next candidate and says so. The one blank exit that never falls through is

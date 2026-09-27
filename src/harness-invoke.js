@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { UserError } from "./logger.js";
-import { resolveOnPath } from "./subprocess.js";
+import { currentChildEnvironmentMode, resolveOnPath } from "./subprocess.js";
 
 /**
  * Invocation-scoped model and effort overlays (`src/acpx.js` is the caller).
@@ -129,7 +129,7 @@ function describeOverride(model, effort) {
 }
 
 function piInvocation({ requestedModel, requestedEffort, notes, cleanups, dispose }) {
-  if (process.env.PI_ACP_PI_COMMAND) {
+  if (currentChildEnvironmentMode() === "native" && process.env.PI_ACP_PI_COMMAND) {
     throw new UserError(
       "cannot safely apply Pi model or effort overrides when PI_ACP_PI_COMMAND replaces the proven Pi command",
       "unset PI_ACP_PI_COMMAND or omit the model and effort override",
@@ -207,13 +207,17 @@ function grokInvocation({ requestedModel, requestedEffort, writeAccess = false, 
 function applyCodexWriteAccess(invocation, { cleanups }) {
   invocation.env = { ...(invocation.env || {}) };
   invocation.env.INITIAL_AGENT_MODE = "agent";
-  invocation.env.CODEX_CONFIG = mergeCodexConfig(process.env.CODEX_CONFIG, invocation.env.CODEX_CONFIG, {
-    features: { code_mode_host: true },
-  });
+  invocation.env.CODEX_CONFIG = mergeCodexConfig(
+    currentChildEnvironmentMode() === "native" ? process.env.CODEX_CONFIG : null,
+    invocation.env.CODEX_CONFIG,
+    {
+      features: { code_mode_host: true },
+    },
+  );
   invocation.sessionMode = "agent";
   invocation.sessionModeRequired = true;
 
-  const real = process.env.CODEX_PATH || null;
+  const real = currentChildEnvironmentMode() === "native" ? process.env.CODEX_PATH || null : null;
   const { wrapperPath, dir } = writeArgvWrapper({
     realCommand: real,
     bundledPackageBin: real ? null : ["@openai", "codex", "bin", "codex.js"],

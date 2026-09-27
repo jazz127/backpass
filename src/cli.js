@@ -11,6 +11,7 @@ import { printTargetNote, resolveTarget, TARGET_COMMANDS } from "./target.js";
 import { State } from "./state.js";
 import { AgentResolver } from "./agents.js";
 import { discover as discoverFileSource } from "./sources/file.js";
+import { withChildEnvironment } from "./subprocess.js";
 
 import { cmdInit } from "./commands/init.js";
 import { cmdScan } from "./commands/scan.js";
@@ -40,6 +41,10 @@ const OPTIONS = {
   host: { type: "string", multiple: true },
   "session-source": { type: "string" },
   "session-source-mode": { type: "string" },
+  "state-dir": { type: "string" },
+  "child-env": { type: "string" },
+  "prompt-retries": { type: "string" },
+  timeout: { type: "string" },
   "include-cursor-ide": { type: "boolean" },
 
   budget: { type: "string" },
@@ -100,6 +105,8 @@ COLLECT SAMPLES
                            ~/.config/backpass/config.json; a repo file may not set them
   --session-source <path>  read an approved v1 snapshot directory or manifest
   --session-source-mode exclusive  use only the selected source (default with --session-source)
+  --state-dir <dir>        private state for this scope and run
+  --child-env restricted  pass a minimal environment to probes and model children
   --include-cursor-ide     also scan the Cursor IDE store (best-effort, v1.1 preview)
   --limit <n>              analyze at most N transcripts this run (newest first)
   --max-transcripts <n>    cap per run; past it a recency-weighted sticky sample
@@ -120,6 +127,8 @@ MODELS (two-tier: cheap analysis, smart synthesis - all through acpx)
   --synthesis-effort <e>   one-off reasoning effort for synthesis            [high]
   --no-auto-agent          skip the ladders and pin codex / claude (the pre-0.2 defaults)
   --jobs <n>               parallel analysis calls                      [4]
+  --prompt-retries <n>    prompt retries for this invocation            [1]
+  --timeout <seconds>     model timeout for this invocation            [300]
 
 BUDGET AND SHAPE
   --budget <tokens>        always-loaded budget per memory file         [5000]
@@ -162,7 +171,7 @@ EXAMPLES
 `;
 
 /** Map CLI flags onto the config shape so one merge order covers every layer. */
-function overridesFrom(values) {
+export function overridesFrom(values) {
   const overrides = { discovery: {}, analysis: {}, synthesis: {} };
 
   if (values.since) overrides.discovery.since = values.since;
@@ -174,6 +183,10 @@ function overridesFrom(values) {
   }
   if (values["include-cursor-ide"]) overrides.discovery.includeCursorIde = true;
   if (values.jobs) overrides.jobs = toInt(values.jobs, "--jobs");
+  if (values["prompt-retries"] !== undefined) {
+    overrides.promptRetries = toNonNegativeInt(values["prompt-retries"], "--prompt-retries");
+  }
+  if (values.timeout !== undefined) overrides.timeoutSeconds = toInt(values.timeout, "--timeout");
   if (values.budget) overrides.budgetTokens = toInt(values.budget, "--budget");
   if (values["max-edits"]) overrides.maxEditsPerRun = toInt(values["max-edits"], "--max-edits");
   if (values["max-transcripts"] !== undefined) {
@@ -220,6 +233,12 @@ function toSeed(value) {
   return n;
 }
 
+function toNonNegativeInt(value, flag) {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) throw new UserError(`${flag} must be a non-negative integer (got "${value}")`);
+  return n;
+}
+
 const COMMANDS = {
   init: cmdInit,
   scan: cmdScan,
@@ -261,6 +280,9 @@ export async function main(argv) {
   }
 
   try {
+    if (values["child-env"] && values["child-env"] !== "restricted" && values["child-env"] !== "native") {
+      throw new UserError('--child-env must be "native" or "restricted"');
+    }
     if (values["session-source-mode"] && !values["session-source"]) {
       throw new UserError("--session-source-mode requires --session-source");
     }
@@ -269,8 +291,11 @@ export async function main(argv) {
         `unsupported --session-source-mode "${values["session-source-mode"]}" (only exclusive is supported)`,
       );
     }
-    if (values["session-source"] && !["run", "scan", "analyze", "propose", "status"].includes(commandName)) {
+    if (values["session-source"] && !["run", "scan", "analyze", "propose", "status", "apply"].includes(commandName)) {
       throw new UserError(`--session-source does not apply to ${commandName}`);
+    }
+    if (values["state-dir"] && !["run", "scan", "analyze", "propose", "status", "apply"].includes(commandName)) {
+      throw new UserError(`--state-dir does not apply to ${commandName}`);
     }
     const sessionSource = values["session-source"] ? discoverFileSource(values["session-source"]) : null;
     const kind = parseScopeKind(values.scope);
@@ -284,6 +309,9 @@ export async function main(argv) {
       config = loadConfig(repo.root, overrides);
     }
     config.discovery.hosts = applyHostFlag(config.discovery.hosts, values.host);
+    config.timeoutOverride = values.timeout !== undefined;
+    config.sourceFingerprint = sessionSource ? `${sessionSource.sourceId}:${sessionSource.snapshotDigest}` : "native";
+    config.enforceEvidenceRoute = true;
     const scope = resolveScope(process.cwd(), { ...values, scope: kind, strict: Boolean(values.strict) }, config, repo);
     printScopeNote(scope);
     if (values.target !== undefined && !TARGET_COMMANDS.has(commandName)) {
@@ -303,8 +331,9 @@ export async function main(argv) {
     if (scope.skillDirs.length) config.skillsDirs = scope.skillDirs;
     config.state = new State(scope.root, {
       stateDir: scope.stateDir,
-      mode: kind === "user" ? 0o700 : undefined,
+      mode: kind === "user" || values["state-dir"] ? 0o700 : undefined,
       exclude: kind === "user" ? false : undefined,
+      binding: values["state-dir"] ? { kind, root: fs.realpathSync(scope.root) } : null,
     }).ensure();
     config.agents = new AgentResolver(config, {
       state: config.state,
@@ -319,12 +348,14 @@ export async function main(argv) {
       flags: values,
       positionals: positionals.slice(1),
       version: VERSION,
+      commandName,
       strict: Boolean(values.strict),
       sessionSource,
+      sessionSourcePath: values["session-source"] || null,
       limit: values.limit ? toInt(values.limit, "--limit") : null,
     };
 
-    return (await command(ctx)) ?? 0;
+    return (await withChildEnvironment(values["child-env"] || "native", () => command(ctx))) ?? 0;
   } catch (err) {
     if (err instanceof UserError) {
       fail(err.message);

@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { parseManifest, validateManifest } from "./external-session-source.js";
+import { digest, parseManifest, validateManifest } from "./external-session-source.js";
 
 const MANIFEST_LIMIT = 1_048_576;
 const SESSION_LIMIT = 2_097_152;
@@ -123,37 +123,51 @@ export function discover(snapshot) {
   const validation = validateManifest(manifestBytes, contents);
   if (!validation.ok) reject(validation.code);
 
+  const descriptors = manifest.sessions.map((entry) => {
+    const payload = JSON.parse(contents.get(entry.contentPath).toString("utf8"));
+    return {
+      sourceKind: "external",
+      sourceId: manifest.sourceNamespace,
+      sessionId: payload.sessionId,
+      revision: payload.revision,
+      projectedAt: Date.parse(payload.projectedAt),
+      originHarness: payload.originHarness,
+      nativeSessionId: payload.nativeSessionId || null,
+      startedAt: payload.startedAt ? Date.parse(payload.startedAt) : null,
+      mtimeMs: payload.startedAt ? Date.parse(payload.startedAt) : Date.parse(payload.capturedAt),
+      timeBasis: payload.timeBasis,
+      bytes: entry.byteLength,
+      contentSignature: entry.sha256,
+      traceDigest: digest(
+        payload.events.map((event) =>
+          Object.fromEntries(Object.entries(event).filter(([key]) => key !== "eventId" && key !== "sourceRefs")),
+        ),
+      ),
+      association: payload.association,
+      title: payload.context.title || null,
+      gitBranch: payload.context.branch || null,
+      model: payload.context.model || null,
+      interactionClass: payload.context.interactionClass,
+      interactionSignals: payload.context.signals,
+      selfGenerated: payload.context.selfGenerated,
+      display: payload.display,
+      screening: payload.screening,
+      events: payload.events,
+    };
+  });
+  const latestBySession = new Map();
+  for (const descriptor of descriptors) {
+    const prior = latestBySession.get(descriptor.sessionId);
+    if (prior && prior.projectedAt === descriptor.projectedAt) reject("revision_ambiguous", descriptor.sessionId);
+    if (!prior || prior.projectedAt < descriptor.projectedAt) latestBySession.set(descriptor.sessionId, descriptor);
+  }
   const snapshotRecord = {
     kind: "external",
     sourceId: manifest.sourceNamespace,
     snapshotDigest: manifest.snapshotDigest,
+    policyDigest: manifest.policyDigest,
     coverage: manifest.coverage,
-    descriptors: manifest.sessions.map((entry) => {
-      const payload = JSON.parse(contents.get(entry.contentPath).toString("utf8"));
-      return {
-        sourceKind: "external",
-        sourceId: manifest.sourceNamespace,
-        sessionId: payload.sessionId,
-        revision: payload.revision,
-        originHarness: payload.originHarness,
-        nativeSessionId: payload.nativeSessionId || null,
-        startedAt: payload.startedAt ? Date.parse(payload.startedAt) : null,
-        mtimeMs: payload.startedAt ? Date.parse(payload.startedAt) : Date.parse(payload.capturedAt),
-        timeBasis: payload.timeBasis,
-        bytes: entry.byteLength,
-        contentSignature: entry.sha256,
-        association: payload.association,
-        title: payload.context.title || null,
-        gitBranch: payload.context.branch || null,
-        model: payload.context.model || null,
-        interactionClass: payload.context.interactionClass,
-        interactionSignals: payload.context.signals,
-        selfGenerated: payload.context.selfGenerated,
-        display: payload.display,
-        screening: payload.screening,
-        events: payload.events,
-      };
-    }),
+    descriptors: [...latestBySession.values()],
   };
   snapshots.add(snapshotRecord);
   return freeze(snapshotRecord);

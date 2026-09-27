@@ -471,10 +471,16 @@ export function validateSession(raw) {
   return result(() => session(raw));
 }
 
+/** Parse a manifest only after its schema and snapshot digest have passed. */
+export function parseManifest(raw) {
+  const manifest = parse(raw, MAX_MANIFEST_BYTES);
+  validateManifestObject(manifest);
+  return manifest;
+}
+
 export function validateManifest(raw, contents) {
   return result(() => {
-    const manifest = parse(raw, MAX_MANIFEST_BYTES);
-    validateManifestObject(manifest);
+    const manifest = parseManifest(raw);
     for (const entry of manifest.sessions) {
       const present =
         contents instanceof Map ? contents.has(entry.contentPath) : Object.hasOwn(contents, entry.contentPath);

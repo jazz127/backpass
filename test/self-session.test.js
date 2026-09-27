@@ -13,6 +13,7 @@ import path from "node:path";
  */
 const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-self-home-"));
 process.env.HOME = fakeHome;
+process.env.CODEX_HOME = path.join(fakeHome, ".codex");
 
 const { discoverTranscripts } = await import("../src/discovery/index.js");
 const { renderPrompt, SELF_SESSION_SENTINEL } = await import("../src/prompts.js");

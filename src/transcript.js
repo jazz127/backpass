@@ -29,6 +29,12 @@ function nativeIdOf(transcript) {
 
 export function transcriptIdentity(transcript) {
   if (typeof transcript?.identity === "string" && transcript.identity) return transcript.identity;
+  if (transcript?.sourceKind === "external") {
+    return crypto
+      .createHash("sha256")
+      .update(JSON.stringify(["external", transcript.sourceId, transcript.sessionId]), "utf8")
+      .digest("hex");
+  }
   return crypto
     .createHash("sha256")
     .update(

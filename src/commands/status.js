@@ -15,6 +15,7 @@ import { HostCache, pruneHostCache } from "../discovery/cache.js";
 import { budgetBar, budgetStatus, formatTokens } from "../tokens.js";
 import { table } from "./scan.js";
 import { candidateKey, isProbeEntryFresh, resolvedEffort } from "../agents.js";
+import { inputInventory } from "../run-context.js";
 
 export async function cmdStatus(ctx) {
   const { repo, config, scope } = ctx;
@@ -39,6 +40,21 @@ export async function cmdStatus(ctx) {
   });
   const skillDirs = resolveProjectSkillDirs(repo.root, overflow.dir, config.skillsDirs || [], { exact: userScope });
   const skills = loadProjectSkills(repo.root, overflow.dir, config.skillsDirs || [], { exact: userScope });
+  const runContext = ctx.flags["state-dir"] ? state.readRunContext() : null;
+  const currentInventory = ctx.flags["state-dir"] ? inputInventory(ctx) : null;
+  const runContextCurrent = runContext
+    ? runContext.inputMemoryDigest === currentInventory.digest &&
+      JSON.stringify(runContext.source) ===
+        JSON.stringify(
+          ctx.sessionSource
+            ? {
+                kind: "external",
+                sourceId: ctx.sessionSource.sourceId,
+                snapshotDigest: ctx.sessionSource.snapshotDigest,
+              }
+            : { kind: "native" },
+        )
+    : null;
   const descriptionTokens = skillDescriptionTokens(skills);
 
   const duplicates = files
@@ -80,11 +96,14 @@ export async function cmdStatus(ctx) {
       proposal: proposal ? { generatedAt: proposal.generatedAt, edits: proposal.edits.length } : null,
       rejections: Object.keys(rejections.entries).length,
       skills: skills.length,
+      ...(ctx.flags["state-dir"] ? { runContext, currentInventory, runContextCurrent } : {}),
     });
     return 0;
   }
 
   out(`${color.bold(ctx.scope?.kind === "user" ? "user scope" : repo.name)} ${color.dim(repo.root)}`);
+  if (ctx.flags["state-dir"])
+    out(`  state  ${state.root} · ${runContext ? (runContextCurrent ? "current" : "stale") : "no scan"}`);
   if (ctx.sessionSource)
     out(
       `  session source  ${ctx.sessionSource.sourceId} · ${ctx.sessionSource.coverage.published} approved session(s)`,

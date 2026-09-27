@@ -403,6 +403,12 @@ function validate(config, { kind = "project", repoRoot = null } = {}) {
   if (!Number.isInteger(config.jobs) || config.jobs < 1) {
     throw new UserError("config.jobs must be an integer >= 1");
   }
+  if (!Number.isInteger(config.timeoutSeconds) || config.timeoutSeconds < 1) {
+    throw new UserError("config.timeoutSeconds must be an integer >= 1");
+  }
+  if (!Number.isInteger(config.promptRetries) || config.promptRetries < 0) {
+    throw new UserError("config.promptRetries must be an integer >= 0");
+  }
   for (const role of ["analysis", "synthesis"]) {
     if (config[role].model && !config[role].agent) {
       throw new UserError(

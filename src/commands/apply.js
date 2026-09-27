@@ -7,6 +7,7 @@ import { openInBrowser } from "../apply/browser.js";
 import { budgetBar, formatTokens } from "../tokens.js";
 import { describeTarget } from "../target.js";
 import { assertSourceCurrent } from "../provenance.js";
+import { checkProposalRunContext } from "../run-context.js";
 
 /**
  * The human gate. `backpass apply` is the only command that writes to the repo.
@@ -29,6 +30,7 @@ export async function cmdApply(ctx) {
   if (!proposal) {
     throw new UserError("no proposal to apply", "run `backpass` first to produce one");
   }
+  checkProposalRunContext(ctx, proposal);
   if (proposal.provenance?.source.kind === "external") assertSourceCurrent(ctx, proposal.provenance);
   else if (ctx.sessionSource) throw new UserError("the saved proposal belongs to a different session source");
   const proposalScope = proposal.scope || "project";
@@ -93,6 +95,7 @@ export async function cmdApply(ctx) {
   for (const id of editIds) if (!decisions[id]) decisions[id] = "skipped";
 
   if (proposal.provenance?.source.kind === "external") assertSourceCurrent(ctx, proposal.provenance);
+  checkProposalRunContext(ctx, proposal);
 
   const results = applyDecisions({
     proposal,

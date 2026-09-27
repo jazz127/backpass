@@ -21,6 +21,7 @@ import { isEvidenceFresh } from "../state.js";
 import { transcriptIdentity } from "../transcript.js";
 import { pruneHostCache } from "../discovery/cache.js";
 import { analysisRoute, assertSourceCurrent, proposalProvenance, routeForPick } from "../provenance.js";
+import { checkRunContext } from "../run-context.js";
 
 /**
  * Fold on-disk evidence for the memory surface. Gap sightings persist across runs, but
@@ -136,12 +137,18 @@ async function runProposalCore(ctx, precomputed) {
   const { file, hash, skills } = precomputed || primaryMemoryFile(repo, config, ctx.scope);
   config.memoryFingerprint = hash;
   const transcripts = precomputed?.transcripts || capTranscripts(await discoverForRun(ctx), config).transcripts;
+  const frozen = checkRunContext(ctx, transcripts);
   assertSourceCurrent(ctx);
   const current = primaryMemoryFile(repo, config, ctx.scope);
   if (current.hash !== hash || current.file.hash !== file.hash) {
     throw new UserError("the input memory surface changed during this run", "run analyze and propose again");
   }
   const provenance = proposalProvenance(ctx, transcripts, hash, ctx.sessionSource ? await analysisRoute(config) : null);
+  if (frozen)
+    provenance.runContext = {
+      selectedCorpusDigest: frozen.selectedCorpusDigest,
+      inputMemoryDigest: frozen.inputMemoryDigest,
+    };
   if (ctx.sessionSource) {
     provenance.routeProfile.synthesisResolved = routeForPick(config, await config.agents.resolve("synthesis"));
   }
@@ -176,6 +183,7 @@ async function runProposalCore(ctx, precomputed) {
   });
 
   try {
+    checkRunContext(ctx, transcripts);
     assertSourceCurrent(ctx);
     const latest = primaryMemoryFile(repo, config, ctx.scope);
     if (latest.hash !== hash || latest.file.hash !== file.hash) {

@@ -6,6 +6,7 @@ import { expandHomePath, parseScopeKind, userStateDir } from "./config.js";
 import { associate as associateProject, associateRemote, globToRegExp } from "./discovery/association.js";
 import { UserError, info } from "./logger.js";
 import { gitProjectIdentity, gitToplevel, listWorktrees, normalizeRemote } from "./repo.js";
+import { assertPrivatePath } from "./state.js";
 
 /**
  * A run scope is the triple (weights surface, session corpus, state directory).
@@ -184,13 +185,46 @@ function syntheticUserRepo(home) {
   };
 }
 
-function resolveProjectScope(repo, config) {
+function explicitStateDir(raw, cwd, kind, scopeRoot, home) {
+  if (!raw) return null;
+  const expanded = expandUserPath(raw, home);
+  const absolute = assertPrivatePath(path.resolve(cwd, expanded));
+  const repoRoot = realpathOrResolve(scopeRoot);
+  const userDefault = realpathOrResolve(userStateDir());
+  const projectDefault = path.resolve(repoRoot, ".backpass");
+  if (kind === "project" && (absolute === userDefault || absolute.startsWith(`${userDefault}${path.sep}`))) {
+    throw new UserError("project state cannot use the user-scope state directory");
+  }
+  if (kind === "user" && (absolute === projectDefault || absolute.startsWith(`${projectDefault}${path.sep}`))) {
+    throw new UserError("user state cannot use the project state directory");
+  }
+  if (absolute === path.parse(absolute).root || absolute === repoRoot) {
+    throw new UserError("--state-dir must name a dedicated private directory");
+  }
+  if (repoRoot.startsWith(`${absolute}${path.sep}`)) {
+    throw new UserError("--state-dir cannot contain the scope root");
+  }
+  if (
+    kind === "project" &&
+    (absolute === path.join(repoRoot, ".git") || absolute.startsWith(`${path.join(repoRoot, ".git")}${path.sep}`))
+  ) {
+    throw new UserError("--state-dir cannot use Git internals");
+  }
+  const checkout = kind === "user" ? gitToplevel(cwd) : null;
+  if (checkout && (absolute === checkout || absolute.startsWith(`${checkout}${path.sep}`))) {
+    throw new UserError("user state cannot enter a project checkout");
+  }
+  return absolute;
+}
+
+function resolveProjectScope(repo, config, flags, cwd, home) {
   return {
     kind: "project",
     repo,
     root: repo.root,
     name: repo.name,
-    stateDir: path.join(repo.root, ".backpass"),
+    stateDir:
+      explicitStateDir(flags?.["state-dir"], cwd, "project", repo.root, home) || path.join(repo.root, ".backpass"),
     modelCwd: repo.root,
     memoryFiles: config.memoryFiles,
     skillDirs: config.skillsDirs || [],
@@ -222,14 +256,18 @@ function resolveProjectScope(repo, config) {
   };
 }
 
-function resolveUserScope(cwd, config, { strict = false, home = os.homedir(), associateUserFn = associateUser } = {}) {
+function resolveUserScope(
+  cwd,
+  config,
+  { strict = false, home = os.homedir(), associateUserFn = associateUser, stateDirOverride = null } = {},
+) {
   const root = home;
   const memoryFiles = (config.memoryFiles || []).map((file) => pathInRoot(file, root, home));
   const overflowDir = pathInRoot(config.skillsDir || ".agents/skills", root, home);
   const skillDirs = (config.skillsDirs || []).map((dir) => pathInRoot(dir, root, home));
   const skillSearchPaths = (config.skillSearchPaths || []).map((p) => expandUserPath(p, home));
   const repo = syntheticUserRepo(root);
-  const stateDir = userStateDir();
+  const stateDir = explicitStateDir(stateDirOverride, cwd, "user", root, home) || userStateDir();
   const associationCache = new Map();
   const knownWorktrees = new Map();
   const indexedRoots = new Set();
@@ -288,7 +326,7 @@ function resolveUserScope(cwd, config, { strict = false, home = os.homedir(), as
  * Build the run scope. `config` is already loaded for this kind.
  *
  * @param {string} cwd
- * @param {{ scope?: string, strict?: boolean }} flags
+ * @param {{ scope?: string, strict?: boolean, "state-dir"?: string }} flags
  * @param {object} config
  * @param {object | null} [repo] required for project scope
  * @param {{ home?: string, associateUserFn?: (descriptor: any, options?: { strict?: boolean }) => any }} [options]
@@ -301,12 +339,13 @@ export function resolveScope(cwd, flags, config, repo = null, options = {}) {
       strict: Boolean(flags?.strict),
       home,
       associateUserFn: options.associateUserFn,
+      stateDirOverride: flags?.["state-dir"],
     });
   }
   if (!repo) {
     throw new UserError("backpass runs per-repo; cd into a repo and retry", "or pass --scope user");
   }
-  return resolveProjectScope(repo, config);
+  return resolveProjectScope(repo, config, flags, cwd, options.home || os.homedir());
 }
 
 export function printScopeNote(scope) {

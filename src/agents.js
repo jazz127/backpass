@@ -2,7 +2,7 @@ import { UserError, color, info, warn } from "./logger.js";
 import { DEFAULT_EFFORT, LEGACY_DEFAULT_AGENTS } from "./config.js";
 import { AcpxError, SESSION_CREATE_TIMEOUT_MS, acpxVersion, classifyAcpxFailure, probeSession } from "./acpx.js";
 import { ambiguousModelDetail, providerAuthState, rankCollidingIds, readProviderAuthTypes } from "./provider-auth.js";
-import { runCapture } from "./subprocess.js";
+import { currentChildEnvironmentMode, runCapture } from "./subprocess.js";
 import { sha256 } from "./state.js";
 
 /**
@@ -404,7 +404,9 @@ export class AgentResolver {
   }
 
   probeScope() {
-    return `${this.config.sourceFingerprint || "native"}:${this.config.memoryFingerprint || ""}:${this.config.analysis?.effort || ""}:${this.config.synthesis?.effort || ""}`;
+    const scope = `${this.config.sourceFingerprint || "native"}:${this.config.memoryFingerprint || ""}:${this.config.analysis?.effort || ""}:${this.config.synthesis?.effort || ""}`;
+    const mode = currentChildEnvironmentMode();
+    return mode === "native" ? scope : `${scope}:${mode}`;
   }
 
   probeKey(candidate) {

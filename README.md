@@ -99,6 +99,26 @@ State lives in `$XDG_CONFIG_HOME/backpass/user/` (default
 `.backpass/`. User-scope evidence, ledgers, proposals, and apply surfaces stay in
 that one directory.
 
+Use `--state-dir <dir>` with `scan`, `analyze`, `propose`, `status`, and `apply` to
+keep a run in a dedicated private state directory. Run `scan` first, then pass the
+same directory and scope to each later command. The scan pins the source snapshot,
+selected corpus, and an inventory of the exact memory and skill file bytes and
+resolved pointer targets. `analyze` and `propose` refuse changed inputs; `apply`
+checks the saved inventory again. A new `scan` starts a new run in that directory.
+The directory is owner-only (0700), and Backpass refuses links in the path (other than
+root-owned system links above your own directories, such as macOS `/tmp`), permissive
+permissions, or reuse for a different scope or repository. The default state paths
+continue to work as before.
+
+`--child-env restricted` starts probes and model children with a minimal environment
+containing runtime basics such as `PATH`, `HOME`, and temporary-directory settings.
+Inherited provider credentials, endpoints, MCP settings, and plugin roots are omitted;
+an embedding runner can add explicitly approved variables through the child-environment
+hook. This mode also rejects memory pointers to files outside the configured memory
+surface. The default child environment remains the native inherited environment.
+`--prompt-retries <n>` and `--timeout <seconds>` override their configured values for
+one command only; neither flag changes a config file or harness default.
+
 Harness load paths, verified for v1:
 
 - **Claude Code** loads `CLAUDE.md` from `CLAUDE_CONFIG_DIR` (default `~/.claude`)
@@ -268,6 +288,9 @@ current user and private, with regular files without hard links and no symlinks.
 cwd, git root, and remotes go through the same association tiers. Its origin harness
 remains visible in the corpus mix, while its source identity stays stable when the
 snapshot directory moves.
+Only the latest revision of each session is collected, and sessions whose screened events
+match (ignoring event ids and source references) are kept once, so a copy republished under
+another session id counts as a single session toward evidence floors.
 Analysis of selected-source sessions uses only the screened trace. Its prompt offers
 abstention when retained events do not support a claim, and evidence quotes must match
 one retained event; stored citations include the approved revision, event, span, and
@@ -668,7 +691,7 @@ minutes for a cold-starting adapter; the remaining probe operations retain their
 10-20 second limits. A potentially transient busy-harness miss retries once and is not cached;
 durable verdicts are cached in
 `.backpass/agent-probe-cache.json` for 12h (30min for negatives). An entry is re-probed
-when the session source, memory surface, or effort changes, or when its harness's
+when the session source, memory surface, effort, or `--child-env` mode changes, or when its harness's
 credential seat (credential home, account identity, or the selected provider's API key)
 changes; `--force` re-probes every entry. The probe is a filter, not a promise: if the
 chosen harness answers `AUTH_REQUIRED`,

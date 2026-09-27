@@ -611,7 +611,7 @@ export async function synthesizeProposal({
       .map((skill) => skill.path),
   ]);
   const sessionName = `backpass-synth-${process.pid}`;
-  const timeoutSeconds = Math.max(config.timeoutSeconds, 900);
+  const timeoutSeconds = config.timeoutOverride ? config.timeoutSeconds : Math.max(config.timeoutSeconds, 900);
   const usage = [];
   const notes = [];
   const noteOnce = (note) => {

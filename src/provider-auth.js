@@ -3,6 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { currentChildEnvironment } from "./subprocess.js";
+
 /**
  * Auth-class signals for advertised-model tie-breaks (`resolveModelId` in `src/agents.js`).
  *
@@ -184,7 +186,7 @@ function accountIdentifiers(value, prefix = "", depth = 0) {
  * keys leave it stable; with no readable account id the credential home is the seat.
  */
 export function providerAuthState(agent, options = {}) {
-  const { env = process.env, homedir = os.homedir(), model = null } = options;
+  const { env = currentChildEnvironment(), homedir = os.homedir(), model = null } = options;
   const seat = credentialSeat(agent, model, { env, homedir });
   const hash = crypto.createHash("sha256");
   hash.update(`${agent}\0${seat.home || ""}\0`);
@@ -207,7 +209,7 @@ export function providerAuthState(agent, options = {}) {
  * @returns {Record<string, AuthClass>}
  */
 export function readProviderAuthTypes(agent, options = {}) {
-  const { env = process.env, homedir = os.homedir() } = options;
+  const { env = currentChildEnvironment(), homedir = os.homedir() } = options;
   /** @type {Record<string, AuthClass>} */
   const types = {};
   if (agent === "pi") Object.assign(types, PI_PROVIDER_AUTH_MODE);

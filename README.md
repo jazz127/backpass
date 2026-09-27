@@ -105,7 +105,8 @@ same directory and scope to each later command. The scan pins the source snapsho
 selected corpus, and an inventory of the exact memory and skill file bytes and
 resolved pointer targets. `analyze` and `propose` refuse changed inputs; `apply`
 checks the saved inventory again. A new `scan` starts a new run in that directory.
-The directory is owner-only (0700), and Backpass refuses existing links, permissive
+The directory is owner-only (0700), and Backpass refuses links in the path (other than
+root-owned system links above your own directories, such as macOS `/tmp`), permissive
 permissions, or reuse for a different scope or repository. The default state paths
 continue to work as before.
 
@@ -687,7 +688,7 @@ minutes for a cold-starting adapter; the remaining probe operations retain their
 10-20 second limits. A potentially transient busy-harness miss retries once and is not cached;
 durable verdicts are cached in
 `.backpass/agent-probe-cache.json` for 12h (30min for negatives). An entry is re-probed
-when the session source, memory surface, or effort changes, or when its harness's
+when the session source, memory surface, effort, or `--child-env` mode changes, or when its harness's
 credential seat (credential home, account identity, or the selected provider's API key)
 changes; `--force` re-probes every entry. The probe is a filter, not a promise: if the
 chosen harness answers `AUTH_REQUIRED`,

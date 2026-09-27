@@ -343,7 +343,7 @@ export class AgentResolver {
   async verdictFor(candidate) {
     const key = this.probeKey(candidate);
     const memo = this.memo.get(key);
-    if (memo && memo.authState === this.credentialFingerprint(candidate.agent) && memo.scope === this.probeScope())
+    if (memo && memo.authState === this.credentialFingerprint(candidate) && memo.scope === this.probeScope())
       return memo;
     if (this.inflight.has(key)) return this.inflight.get(key);
     const pending = this.probeAndRecord(candidate, key).finally(() => this.inflight.delete(key));
@@ -354,7 +354,7 @@ export class AgentResolver {
   async probeAndRecord(candidate, key) {
     const cache = await this.loadCache();
     const cached = cache.entries[key];
-    const authState = this.credentialFingerprint(candidate.agent);
+    const authState = this.credentialFingerprint(candidate);
     const authStateMatches = cached?.authState === authState;
     const scopeMatches =
       cached?.scope === undefined ? this.probeScope() === "native:::" : cached?.scope === this.probeScope();
@@ -395,8 +395,8 @@ export class AgentResolver {
     return entry;
   }
 
-  credentialFingerprint(agent) {
-    return this.providerAuthState(agent);
+  credentialFingerprint({ agent, model }) {
+    return this.providerAuthState(agent, { model });
   }
 
   probeScope() {
@@ -406,7 +406,7 @@ export class AgentResolver {
   probeKey(candidate) {
     const base = candidateKey(candidate);
     if (!this.config.enforceEvidenceRoute) return base;
-    return `${base}:${sha256(`${this.probeScope()}:${this.credentialFingerprint(candidate.agent)}`).slice(0, 24)}`;
+    return `${base}:${sha256(`${this.probeScope()}:${this.credentialFingerprint(candidate)}`).slice(0, 24)}`;
   }
 
   /** The candidates for a role, in order, as `{ agent, model }`. */
@@ -506,7 +506,7 @@ export class AgentResolver {
     const key = this.probeKey({ agent: pick.agent, model: pick.ladderModel });
     if (this.memo.get(key)?.verdict === "ok") {
       // First worker to see the failure records it; the rest just re-resolve.
-      const authState = this.credentialFingerprint(pick.agent);
+      const authState = this.credentialFingerprint({ agent: pick.agent, model: pick.ladderModel });
       const entry = {
         verdict,
         detail,

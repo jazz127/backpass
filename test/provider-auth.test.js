@@ -190,6 +190,39 @@ test("claude credential seat follows its config dir and account", () => {
   assert.notEqual(providerAuthState("claude", { env: { ...env, ANTHROPIC_API_KEY: "sk-ant" }, homedir: root }), first);
 });
 
+for (const agent of ["pi", "opencode"]) {
+  test(`${agent} credential seat hashes only the selected provider's key`, () => {
+    const root = tmpDir();
+    const env = { PI_CODING_AGENT_DIR: path.join(root, "pi"), XDG_DATA_HOME: path.join(root, "data") };
+    const seat = (extra, model) => providerAuthState(agent, { env: { ...env, ...extra }, homedir: root, model });
+    const keys = { ANTHROPIC_API_KEY: "ant-a", OPENAI_API_KEY: "oai-a", GEMINI_API_KEY: "gem-a" };
+    const first = seat(keys, "anthropic/claude-luna");
+    assert.equal(seat({ ...keys, OPENAI_API_KEY: "oai-b", GEMINI_API_KEY: "gem-b" }, "anthropic/claude-luna"), first);
+    assert.notEqual(seat({ ...keys, ANTHROPIC_API_KEY: "ant-b" }, "anthropic/claude-luna"), first);
+
+    const noDefault = seat(keys, null);
+    assert.equal(seat({ ANTHROPIC_API_KEY: "ant-b", OPENAI_API_KEY: "oai-b" }, null), noDefault);
+
+    if (agent === "pi") {
+      fs.mkdirSync(env.PI_CODING_AGENT_DIR, { recursive: true });
+      fs.writeFileSync(
+        path.join(env.PI_CODING_AGENT_DIR, "settings.json"),
+        JSON.stringify({ defaultProvider: "openai" }),
+      );
+    } else {
+      fs.mkdirSync(path.join(root, ".config", "opencode"), { recursive: true });
+      fs.writeFileSync(
+        path.join(root, ".config", "opencode", "opencode.json"),
+        JSON.stringify({ model: "openai/gpt-5.6-luna" }),
+      );
+    }
+    const byDefault = seat(keys, null);
+    assert.equal(seat({ ...keys, ANTHROPIC_API_KEY: "ant-b" }, null), byDefault);
+    assert.notEqual(seat({ ...keys, OPENAI_API_KEY: "oai-b" }, null), byDefault);
+    assert.equal(seat({ ...keys, ANTHROPIC_API_KEY: "ant-b" }, "gpt-5.6-luna"), byDefault);
+  });
+}
+
 test("codex, claude, grok, and cursor expose no auth-class map", () => {
   for (const agent of ["codex", "claude", "grok", "cursor"]) {
     assert.deepEqual(readProviderAuthTypes(agent, { advertised: ["gpt-5.6-luna", "openai/gpt-5.6-luna"] }), {});

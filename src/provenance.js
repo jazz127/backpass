@@ -10,7 +10,9 @@ export function routeForPick(config, pick) {
     agent: pick.agent,
     model: pick.model || null,
     effort: pick.effort || null,
-    seat: config.agents.credentialFingerprint?.(pick.agent) || providerAuthState(pick.agent),
+    seat:
+      config.agents.credentialFingerprint?.({ agent: pick.agent, model: pick.model }) ||
+      providerAuthState(pick.agent, { model: pick.model }),
   };
 }
 

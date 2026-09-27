@@ -120,10 +120,27 @@ export function opencodeAuthFilePath({ env = process.env, homedir = os.homedir()
   return path.join(base, "opencode", "auth.json");
 }
 
-const PROVIDER_KEY_ENV = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "XAI_API_KEY", "OPENROUTER_API_KEY"];
+const PROVIDER_KEY_ENV = {
+  anthropic: "ANTHROPIC_API_KEY",
+  openai: "OPENAI_API_KEY",
+  google: "GEMINI_API_KEY",
+  gemini: "GEMINI_API_KEY",
+  xai: "XAI_API_KEY",
+  openrouter: "OPENROUTER_API_KEY",
+};
+
+/** Provider a pi/opencode pick runs on: its model prefix, else the harness's configured default. */
+function selectedProvider(agent, model, { env, homedir, home }) {
+  const prefix = providerOf(model || "");
+  if (PROVIDER_KEY_ENV[prefix]) return prefix;
+  if (agent === "pi") return readJsonObject(path.join(home, "settings.json"))?.defaultProvider;
+  const xdg = typeof env.XDG_CONFIG_HOME === "string" && env.XDG_CONFIG_HOME.trim();
+  const config = readJsonObject(path.join(xdg || path.join(homedir, ".config"), "opencode", "opencode.json"));
+  return typeof config?.model === "string" ? providerOf(config.model) : null;
+}
 
 /** Where each harness keeps its credentials, the file naming its account, and the key env it reads. */
-function credentialSeat(agent, { env, homedir }) {
+function credentialSeat(agent, model, { env, homedir }) {
   const dir = (name, fallback) => (typeof env[name] === "string" && env[name].trim() ? env[name].trim() : fallback);
   if (agent === "codex") {
     const home = dir("CODEX_HOME", path.join(homedir, ".codex"));
@@ -137,13 +154,11 @@ function credentialSeat(agent, { env, homedir }) {
       keyEnv: ["ANTHROPIC_API_KEY"],
     };
   }
-  if (agent === "pi") {
-    const accountFile = piAuthFilePath({ env, homedir });
-    return { home: path.dirname(accountFile), accountFile, keyEnv: PROVIDER_KEY_ENV };
-  }
-  if (agent === "opencode") {
-    const accountFile = opencodeAuthFilePath({ env, homedir });
-    return { home: path.dirname(accountFile), accountFile, keyEnv: PROVIDER_KEY_ENV };
+  if (agent === "pi" || agent === "opencode") {
+    const accountFile = agent === "pi" ? piAuthFilePath({ env, homedir }) : opencodeAuthFilePath({ env, homedir });
+    const home = path.dirname(accountFile);
+    const keyEnv = PROVIDER_KEY_ENV[selectedProvider(agent, model, { env, homedir, home })];
+    return { home, accountFile, keyEnv: keyEnv ? [keyEnv] : [] };
   }
   if (agent === "grok") return { home: path.join(homedir, ".grok"), accountFile: null, keyEnv: ["XAI_API_KEY"] };
   if (agent === "cursor") return { home: path.join(homedir, ".cursor"), accountFile: null, keyEnv: ["CURSOR_API_KEY"] };
@@ -165,12 +180,12 @@ function accountIdentifiers(value, prefix = "", depth = 0) {
 /**
  * Fingerprint of the credential seat one harness runs under: its credential home, the
  * account identifiers readable from its local credential file, and a hash of the API-key
- * env vars that harness reads. Token refreshes and other providers' keys leave it stable;
- * with no readable account id the credential home is the seat.
+ * env var of the provider that harness runs `model` on. Token refreshes and other providers'
+ * keys leave it stable; with no readable account id the credential home is the seat.
  */
 export function providerAuthState(agent, options = {}) {
-  const { env = process.env, homedir = os.homedir() } = options;
-  const seat = credentialSeat(agent, { env, homedir });
+  const { env = process.env, homedir = os.homedir(), model = null } = options;
+  const seat = credentialSeat(agent, model, { env, homedir });
   const hash = crypto.createHash("sha256");
   hash.update(`${agent}\0${seat.home || ""}\0`);
   const account = seat.accountFile ? readJsonObject(seat.accountFile) : null;

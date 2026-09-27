@@ -273,7 +273,9 @@ abstention when retained events do not support a claim, and evidence quotes must
 one retained event; stored citations include the approved revision, event, span, and
 opaque source references. Native transcript analysis retains its existing behavior.
 For quote matching, runs of whitespace fold to one space and leading/trailing
-whitespace is ignored; spans still point into the rendered event field.
+whitespace is ignored; spans still point into the rendered event field. A quote that
+overlaps text the distiller added (truncation markers, output-size notes, redaction
+placeholders) is rejected, and a reported raw-transcript read fails the analysis.
 
 Collection is incremental. Codex alone can hold 10,000+ rollouts, so verdicts are cached in
 `.backpass/scan-cache.json` by path, mtime and size - re-scans cost only the new files.
@@ -344,9 +346,10 @@ coining a paraphrase of it.
 items are discarded - the single most important defence against a model confabulating
 influence - and so are quotes that do not actually appear in the distilled trace they claim
 to come from, compared whitespace-folded so the trace's line wrapping never rejects a real
-quote. A paraphrase is a claim without evidence. The check is skipped only when the analysis
-reports `usedRawTranscript`, because then the quote may legitimately come from text the
-distiller truncated or elided. When a run discards quotes this way it says so on stderr:
+quote. A paraphrase is a claim without evidence. For native transcripts, the check is
+skipped only when the analysis reports `usedRawTranscript`, because then the quote may
+legitimately come from text the distiller truncated or elided; selected-source sessions
+never skip it (see [Collect samples](#1-collect-samples---which-sessions-belong-to-this-repo)). When a run discards quotes this way it says so on stderr:
 a model that paraphrases instead of copying produces fewer findings, not cleaner ones.
 Negative evidence is weighted highest, but its class determines what it supports:
 non-compliance supports reinforcement, while only harm supports removal.

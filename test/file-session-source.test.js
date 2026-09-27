@@ -13,6 +13,8 @@ import { transcriptIdentity } from "../src/transcript.js";
 import { SELF_SESSION_SENTINEL } from "../src/sentinel.js";
 import { approvedContentDigest, canonicalize, digest, snapshotDigest } from "../src/sources/external-session-source.js";
 import { discover as discoverFileSource, SessionSourceError } from "../src/sources/file.js";
+import { distill } from "../src/distill.js";
+import { classifyInteraction } from "../src/interaction.js";
 
 const fixtures = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -150,6 +152,46 @@ test("a source origin harness does not need a native adapter", async () => {
     (await readTranscript(result.transcripts[0])).events.map((event) => event.eventId),
     ["e1", "e2"],
   );
+});
+
+test("a selected snapshot behind a symlinked parent directory is canonicalized and read", async () => {
+  const repo = projectRepo();
+  const { temp, root } = makeSnapshot((payload) => {
+    payload.association.cwd = repo.root;
+  });
+  const alias = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-source-alias-"));
+  const linkedParent = path.join(alias, "linked");
+  fs.symlinkSync(temp, linkedParent, "dir");
+  const result = await discoverTranscripts({
+    repo,
+    scope: projectScope(repo),
+    config: config(),
+    sessionSource: path.join(linkedParent, path.basename(root)),
+  });
+  assert.equal(result.transcripts.length, 1);
+  assert.equal(result.transcripts[0].project, repo.root);
+});
+
+test("an unknown interaction class falls back to cwd classification", async () => {
+  const repo = projectRepo();
+  const { root } = makeSnapshot((payload) => {
+    payload.association.cwd = path.join(repo.root, ".no-mistakes", "worktrees", "run");
+    payload.context.interactionClass = "unknown";
+  });
+  const result = await discoverTranscripts({ repo, scope: projectScope(repo), config: config(), sessionSource: root });
+  assert.equal(result.transcripts.length, 1);
+  assert.equal(classifyInteraction(result.transcripts[0]), "non-interactive");
+});
+
+test("a trace-only session's distilled trace never points at a raw transcript", async () => {
+  const repo = projectRepo();
+  const { root } = makeSnapshot((payload) => {
+    payload.association.cwd = repo.root;
+  });
+  const result = await discoverTranscripts({ repo, scope: projectScope(repo), config: config(), sessionSource: root });
+  const read = await readTranscript(result.transcripts[0]);
+  const { trace } = distill(read.events, { ...result.transcripts[0], rawPath: read.rawPath });
+  assert.doesNotMatch(trace, /raw transcript/);
 });
 
 test("a projected self session is excluded even when its marker was missed", async () => {

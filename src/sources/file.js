@@ -51,24 +51,6 @@ function checkedStat(target, kind) {
   return stat;
 }
 
-function checkedDirectory(target) {
-  const absolute = path.resolve(target);
-  const parts = absolute.split(path.sep);
-  let current = path.parse(absolute).root;
-  // Ancestors may be shared, but none may redirect this selection through a link.
-  for (const part of parts.filter(Boolean)) {
-    current = path.join(current, part);
-    let stat;
-    try {
-      stat = fs.lstatSync(current);
-    } catch (error) {
-      reject("path_unreadable", `${current}: ${error.code || error.message}`);
-    }
-    if (stat.isSymbolicLink() || !stat.isDirectory()) reject("path_unsafe", current);
-  }
-  return checkedStat(absolute, "directory");
-}
-
 function readChecked(file, limit) {
   const before = checkedStat(file, "file");
   if (before.size > limit) reject("size_limit", file);
@@ -103,18 +85,18 @@ function readChecked(file, limit) {
 
 /** Discover all sessions, validating the complete snapshot before returning any descriptor. */
 export function discover(snapshot) {
-  const selected = path.resolve(snapshot);
+  let selected;
   let selectedStat;
   try {
+    selected = fs.realpathSync(path.resolve(snapshot));
     selectedStat = fs.lstatSync(selected);
   } catch (error) {
-    reject("path_unreadable", `${selected}: ${error.code || error.message}`);
+    reject("path_unreadable", `${path.resolve(snapshot)}: ${error.code || error.message}`);
   }
-  if (selectedStat.isSymbolicLink()) reject("path_unsafe", selected);
   const root = selectedStat.isDirectory() ? selected : path.dirname(selected);
   const manifestPath = selectedStat.isDirectory() ? path.join(selected, "manifest.json") : selected;
   if (path.basename(manifestPath) !== "manifest.json") reject("path_invalid", selected);
-  checkedDirectory(root);
+  checkedStat(root, "directory");
   const manifestBytes = readChecked(manifestPath, MANIFEST_LIMIT);
   let manifest;
   try {

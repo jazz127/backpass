@@ -4,4 +4,4 @@
 
 The manifest's `sourceKind: "external"` and `sourceNamespace` identify the **source adapter** that supplies the projection. A payload's `originHarness` identifies the **original harness** that produced the session. These identities serve different purposes and can differ.
 
-The synthetic golden fixtures under `test/fixtures/external-session-source/v1/` pin accepted bytes, digest values, and stable rejection codes. Consumers must separately confine paths and reject links before reading a snapshot. No external source is wired into Backpass discovery yet; native discovery behavior is unchanged.
+The synthetic golden fixtures under `test/fixtures/external-session-source/v1/` pin accepted bytes, digest values, and stable rejection codes. Consumers must separately confine paths and reject links before reading a snapshot. A run selects a snapshot with `--session-source <directory>`. The selection is exclusive by default: no native or SSH transcript discovery runs, and a snapshot that fails validation fails the run with a named `SessionSourceError` instead of yielding an empty history. Without the flag, native discovery behavior is unchanged.

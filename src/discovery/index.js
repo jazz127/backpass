@@ -258,7 +258,7 @@ function discoverExternalTranscripts({ repo, scope = null, config, strict = fals
       host: null,
       remote: null,
       interactionSignals: {},
-      interaction: descriptor.interactionClass === "autonomous" ? "non-interactive" : "interactive",
+      interaction: { autonomous: "non-interactive", interactive: "interactive" }[descriptor.interactionClass],
       timeBasis: descriptor.timeBasis,
       display: descriptor.display,
       screening: descriptor.screening,

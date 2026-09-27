@@ -139,13 +139,15 @@ export function distill(events, meta, options = {}) {
     .filter((l) => l !== null)
     .join("\n");
 
-  const footer = [
-    "",
-    "---",
-    `raw transcript: ${meta.rawPath}`,
-    "Tool calls above are one-line summaries and tool output is truncated. Open the raw",
-    "transcript only if a specific claim needs the full text.",
-  ].join("\n");
+  const footer = meta.rawPath
+    ? [
+        "",
+        "---",
+        `raw transcript: ${meta.rawPath}`,
+        "Tool calls above are one-line summaries and tool output is truncated. Open the raw",
+        "transcript only if a specific claim needs the full text.",
+      ].join("\n")
+    : "";
 
   const { body, elided } = capTrace(lines.join("\n").trim(), maxTraceTokens);
   const trace = `${header}\n${body}\n${footer}\n`;

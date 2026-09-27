@@ -293,6 +293,32 @@ test("selected source evidence is anchored only to retained approved event text"
   );
 });
 
+test("trace-only anchors exclude generated truncation annotations", async () => {
+  const repo = projectRepo();
+  const { root } = makeSnapshot((payload) => {
+    payload.association.cwd = repo.root;
+  });
+  const result = await discoverTranscripts({ repo, scope: projectScope(repo), config: config(), sessionSource: root });
+  const transcript = result.transcripts[0];
+  const read = await readTranscript(transcript);
+  const command = `run the retained command ${"a".repeat(200)}`;
+  const output = `retained output line ${"b".repeat(300)}`;
+  const distilled = distill([{ ...read.events[1], omitted: false, input: { command }, result: output }], transcript, {
+    evidencePolicy: read.evidencePolicy,
+  });
+  const [input, rendered] = distilled.retained[0].fields;
+  assert.match(input.text, /\.\.\.$/);
+  assert.match(rendered.text, /\.\.\. \(output \d+B, truncated\)$/);
+  const item = (quote) => ({ positive: [{ instruction: "AG-001", quote }] });
+  const accepts = (quote) => sanitizeEvidence(item(quote), null, distilled, read.evidencePolicy).positive.length;
+  assert.equal(accepts("run the retained command"), 1);
+  assert.equal(accepts("retained output line"), 1);
+  assert.equal(accepts(`${"a".repeat(8)}...`), 0);
+  assert.equal(accepts(`${"b".repeat(8)}... (output`), 0);
+  assert.equal(accepts(rendered.text.slice(rendered.text.indexOf("(output"))), 0);
+  assert.equal(accepts("B, truncated)"), 0);
+});
+
 test("trace-only middle omission never offers a source lookup", async () => {
   const repo = projectRepo();
   const { root } = makeSnapshot((payload) => {

@@ -91,7 +91,7 @@ function traceOnlyAnchor(item, trace) {
     if (!event.quoteable) continue;
     for (const field of event.fields) {
       for (const span of quoteSpans(field.text, quote)) {
-        if (!overlapsPlaceholder(field.text, span))
+        if (span.end <= field.sourceEnd && !overlapsPlaceholder(field.text, span))
           return {
             ...trace.source,
             eventId: event.eventId,

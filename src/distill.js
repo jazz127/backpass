@@ -19,11 +19,12 @@ const TOOL_INPUT_CHARS = 160;
 const TOOL_OUTPUT_CHARS = 200;
 const MESSAGE_CHARS = 6000;
 
-function oneLine(text, limit) {
+/** Returns [source-derived text, generated annotation]. */
+function oneLineParts(text, limit) {
   const flat = String(text ?? "")
     .replace(/\s+/g, " ")
     .trim();
-  return flat.length > limit ? `${flat.slice(0, limit)}...` : flat;
+  return flat.length > limit ? [flat.slice(0, limit), "..."] : [flat, ""];
 }
 
 function clampMessage(text) {
@@ -35,27 +36,35 @@ function clampMessage(text) {
 }
 
 function describeToolInput(input) {
-  if (input === null || input === undefined) return "";
-  if (typeof input === "string") return oneLine(input, TOOL_INPUT_CHARS);
+  return describeToolInputParts(input).join("");
+}
+
+function describeToolInputParts(input) {
+  if (input === null || input === undefined) return ["", ""];
+  if (typeof input === "string") return oneLineParts(input, TOOL_INPUT_CHARS);
   // Prefer the field a human would recognise for the common tools.
   for (const key of ["command", "cmd", "file_path", "path", "pattern", "query", "url", "description"]) {
     if (typeof input[key] === "string" && input[key].trim()) {
-      return oneLine(input[key], TOOL_INPUT_CHARS);
+      return oneLineParts(input[key], TOOL_INPUT_CHARS);
     }
   }
   try {
-    return oneLine(JSON.stringify(input), TOOL_INPUT_CHARS);
+    return oneLineParts(JSON.stringify(input), TOOL_INPUT_CHARS);
   } catch {
-    return "";
+    return ["", ""];
   }
 }
 
 function describeToolResult(result) {
-  if (result === null || result === undefined) return "";
+  return describeToolResultParts(result).join("");
+}
+
+function describeToolResultParts(result) {
+  if (result === null || result === undefined) return ["", ""];
   const text = typeof result === "string" ? result : safeStringify(result);
   const bytes = Buffer.byteLength(text, "utf8");
-  const summary = oneLine(text, TOOL_OUTPUT_CHARS);
-  return bytes > TOOL_OUTPUT_CHARS ? `${summary} (output ${formatBytes(bytes)}, truncated)` : summary;
+  const [summary, suffix] = oneLineParts(text, TOOL_OUTPUT_CHARS);
+  return [summary, bytes > TOOL_OUTPUT_CHARS ? `${suffix} (output ${formatBytes(bytes)}, truncated)` : suffix];
 }
 
 function safeStringify(value) {
@@ -190,14 +199,17 @@ function distillTraceOnly(events, meta, options) {
       if (event.role === "user") userTurns++;
       else assistantTurns++;
       label = `### turn ${turn} · ${event.role}`;
-      fields.push({ field: "text", text: rendered });
+      fields.push({ field: "text", text: rendered, sourceEnd: rendered.length });
     } else if (event.kind === "tool") {
       toolCalls++;
       label = `### tool ${toolCalls} · ${safeLabel(event.name)}`;
-      const input = redact(describeToolInput(event.input));
-      const result = redact(describeToolResult(event.result));
-      if (input) fields.push({ field: "input", text: input });
-      if (result) fields.push({ field: "result", text: result });
+      for (const [field, [kept, note]] of [
+        ["input", describeToolInputParts(event.input)],
+        ["result", describeToolResultParts(event.result)],
+      ]) {
+        const source = redact(kept);
+        if (source || note) fields.push({ field, text: `${source}${note}`, sourceEnd: source.length });
+      }
     } else continue;
     const body = [label, ...fields.map(({ field, text }) => `${field}: ${text}`)].join("\n");
     blocks.push({ body, event, fields });

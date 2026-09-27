@@ -8,8 +8,9 @@ import { estimateTokens } from "./tokens.js";
  * The point is cheap-first analysis. Raw transcripts on this machine run to megabytes,
  * almost all of it tool-call noise. Distillation keeps what carries the loss signal -
  * what the human asked, what the agent said, and a one-line shape of each tool call -
- * and drops the rest. The trace ends with the raw transcript path so the analysis agent
- * can open the original when (and only when) a claim needs it.
+ * and drops the rest. Native traces end with the raw transcript path so the analysis
+ * agent can open the original when (and only when) a claim needs it. Selected-source
+ * traces instead retain event references and never offer that path.
  *
  * Adapters produce a normalized event stream; everything below is shared.
  */
@@ -98,6 +99,7 @@ export function isBoilerplate(text) {
  *   { kind: 'thinking', text }   (dropped - reasoning traces are noise for this purpose)
  */
 export function distill(events, meta, options = {}) {
+  if (options.evidencePolicy === "trace-only") return distillTraceOnly(events, meta, options);
   const maxTraceTokens = options.maxTraceTokens ?? 12000;
   const lines = [];
   let userTurns = 0;
@@ -161,6 +163,107 @@ export function distill(events, meta, options = {}) {
       elided,
       distilledTokens: estimateTokens(trace),
     },
+  };
+}
+
+function safeLabel(value) {
+  const label = String(value ?? "").trim();
+  return label && !/[\\/\r\n]/.test(label) ? redact(label) : "(withheld)";
+}
+
+/** A projected trace retains complete rendered fields so every citation has one event. */
+function distillTraceOnly(events, meta, options) {
+  const maxTraceTokens = options.maxTraceTokens ?? 12000;
+  const blocks = [];
+  let userTurns = 0;
+  let assistantTurns = 0;
+  let toolCalls = 0;
+  let turn = 0;
+  for (const event of events) {
+    if (!event) continue;
+    const fields = [];
+    let label;
+    if (event.kind === "message") {
+      const rendered = clampMessage(redact(event.text));
+      if (!rendered || isBoilerplate(rendered)) continue;
+      turn++;
+      if (event.role === "user") userTurns++;
+      else assistantTurns++;
+      label = `### turn ${turn} · ${event.role}`;
+      fields.push({ field: "text", text: rendered });
+    } else if (event.kind === "tool") {
+      toolCalls++;
+      label = `### tool ${toolCalls} · ${safeLabel(event.name)}`;
+      const input = redact(describeToolInput(event.input));
+      const result = redact(describeToolResult(event.result));
+      if (input) fields.push({ field: "input", text: input });
+      if (result) fields.push({ field: "result", text: result });
+    } else continue;
+    const body = [label, ...fields.map(({ field, text }) => `${field}: ${text}`)].join("\n");
+    blocks.push({ body, event, fields });
+  }
+
+  // Select whole blocks. A partial head or tail could turn one quote into a false
+  // cross-event anchor and would make the quote span impossible to review.
+  let selected = blocks;
+  let elided = false;
+  let headCount = blocks.length;
+  const budget = maxTraceTokens * 4;
+  if (estimateTokens(blocks.map((block) => block.body).join("\n\n")) > maxTraceTokens) {
+    selected = [];
+    let used = 0;
+    for (const block of blocks) {
+      if (used + block.body.length > budget * 0.45) break;
+      selected.push(block);
+      used += block.body.length;
+    }
+    headCount = selected.length;
+    const tail = [];
+    used = 0;
+    for (let i = blocks.length - 1; i >= selected.length; i--) {
+      if (used + blocks[i].body.length > budget * 0.45) break;
+      tail.unshift(blocks[i]);
+      used += blocks[i].body.length;
+    }
+    selected = [...selected, ...tail];
+    elided = selected.length < blocks.length;
+  }
+  const retained = selected.map((block) => ({
+    eventId: block.event.eventId,
+    sourceRefs: block.event.sourceRefs,
+    quoteable: !block.event.omitted,
+    fields: block.fields,
+  }));
+  const omittedEvents = Number(meta.screening?.withheldEvents ?? 0) + events.filter((event) => event?.omitted).length;
+  const header = [
+    `# session ${safeLabel(meta.sessionId)}`,
+    `source: ${safeLabel(meta.sourceId)}/${safeLabel(meta.sessionId)}@${safeLabel(meta.revision)}`,
+    `project: ${safeLabel(meta.display?.project)}`,
+    `worktree: ${safeLabel(meta.display?.worktree)}`,
+    `coverage: ${selected.length}/${blocks.length} rendered events retained; ${omittedEvents} source events omitted`,
+    "",
+  ].join("\n");
+  const middle = "[... middle of session omitted ...]";
+  const body = elided
+    ? `${selected
+        .slice(0, headCount)
+        .map((block) => block.body)
+        .join("\n\n")}\n\n${middle}\n\n${selected
+        .slice(headCount)
+        .map((block) => block.body)
+        .join("\n\n")}`
+    : selected.map((block) => block.body).join("\n\n");
+  const trace = `${header}\n${body}\n`;
+  return {
+    trace,
+    retained,
+    source: {
+      sourceId: meta.sourceId,
+      sessionId: meta.sessionId,
+      revision: meta.revision,
+      approvedContentDigest: meta.screening?.approvedContentDigest,
+    },
+    stats: { userTurns, assistantTurns, toolCalls, elided, distilledTokens: estimateTokens(trace) },
   };
 }
 

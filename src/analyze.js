@@ -45,21 +45,83 @@ function foldSpace(text) {
   return String(text).replace(/\s+/g, " ").trim();
 }
 
+/** Fold whitespace while keeping UTF-16 offsets into the rendered event field. */
+function quoteSpans(text, quote) {
+  const chars = [];
+  const starts = [];
+  const ends = [];
+  for (let i = 0; i < text.length;) {
+    if (/\s/.test(text[i])) {
+      const start = i;
+      while (i < text.length && /\s/.test(text[i])) i++;
+      if (chars.length && i < text.length) {
+        chars.push(" ");
+        starts.push(start);
+        ends.push(i);
+      }
+    } else {
+      chars.push(text[i]);
+      starts.push(i);
+      ends.push(i + 1);
+      i++;
+    }
+  }
+  const folded = chars.join("");
+  const needle = foldSpace(quote);
+  const spans = [];
+  for (let at = folded.indexOf(needle); at >= 0; at = folded.indexOf(needle, at + 1)) {
+    spans.push({ start: starts[at], end: ends[at + needle.length - 1] });
+  }
+  return spans;
+}
+
+function overlapsPlaceholder(text, span) {
+  for (const match of text.matchAll(/\[redacted(?::[A-Z_]+)?\]|\[\.\.\.[^\]]*\]/g)) {
+    if (span.start < match.index + match[0].length && span.end > match.index) return true;
+  }
+  return false;
+}
+
+function traceOnlyAnchor(item, trace) {
+  const quote = item.quote.trim();
+  if (quote.length > 600) return null;
+  const substantive = quote.replace(/\[redacted(?::[A-Z_]+)?\]|\[\.\.\.[^\]]*\]/g, "").trim();
+  if (substantive.length < 8) return null;
+  for (const event of trace.retained) {
+    if (!event.quoteable) continue;
+    for (const field of event.fields) {
+      for (const span of quoteSpans(field.text, quote)) {
+        if (!overlapsPlaceholder(field.text, span))
+          return {
+            ...trace.source,
+            eventId: event.eventId,
+            sourceRefs: event.sourceRefs,
+            field: field.field,
+            quoteSpan: span,
+          };
+      }
+    }
+  }
+  return null;
+}
+
 /**
  * Evidence items without a verbatim quote are dropped - the rubric's central rule.
  *
- * When `trace` is supplied and the model did not open the raw transcript, a quote must
- * also appear in that trace (whitespace folded). A quote that is long enough but not in
- * the trace is a paraphrase, and a paraphrase is a claim without evidence. When the model
- * reports `usedRawTranscript`, the quote may come from text the distiller truncated or
- * elided, so the substring check is skipped rather than punishing the honest path. Only
- * the literal boolean opts out: a model that answers `"false"` must still anchor its
- * quotes, or a stringly-typed reply would disable the check it is meant to fail.
+ * For native sessions, a quote must appear in the trace unless the model reports that
+ * it opened the raw transcript. Only the literal boolean opts out. Trace-only sessions
+ * require a quote in one retained event field regardless of the model's answer, and a
+ * true raw-access report fails the response by name.
  *
  * `quotesNotInTrace` counts what the trace check rejected, so a run whose analysis model
  * paraphrases everything reads as that rather than as a clean repo.
  */
-export function sanitizeEvidence(parsed, memoryFile = null, trace = null) {
+export function sanitizeEvidence(parsed, memoryFile = null, trace = null, evidencePolicy = null) {
+  const traceOnly = evidencePolicy === "trace-only";
+  if (traceOnly && (!trace || typeof trace.trace !== "string" || !Array.isArray(trace.retained))) {
+    throw new Error("trace_only_trace_missing");
+  }
+  if (traceOnly && parsed?.usedRawTranscript === true) throw new Error("trace_only_raw_access_reported");
   const clean = {
     positive: [],
     negative: [],
@@ -73,6 +135,12 @@ export function sanitizeEvidence(parsed, memoryFile = null, trace = null) {
   const foldedTrace = typeof trace === "string" && !clean.usedRawTranscript ? foldSpace(trace) : null;
   const hasQuote = (item) => {
     if (typeof item?.quote !== "string" || item.quote.trim().length < 8) return false;
+    if (traceOnly) {
+      const anchor = traceOnlyAnchor(item, trace);
+      if (anchor) return anchor;
+      clean.quotesNotInTrace += 1;
+      return false;
+    }
     if (foldedTrace === null || foldedTrace.includes(foldSpace(item.quote))) return true;
     clean.quotesNotInTrace += 1;
     return false;
@@ -80,7 +148,8 @@ export function sanitizeEvidence(parsed, memoryFile = null, trace = null) {
 
   for (const key of ["positive", "negative"]) {
     for (const item of Array.isArray(parsed[key]) ? parsed[key] : []) {
-      if (!hasQuote(item) || typeof item.instruction !== "string") continue;
+      const anchor = hasQuote(item);
+      if (!anchor || typeof item.instruction !== "string") continue;
       const instruction = item.instruction.trim();
       if (validInstructions && !validInstructions.has(instruction)) continue;
       const entry = {
@@ -89,6 +158,7 @@ export function sanitizeEvidence(parsed, memoryFile = null, trace = null) {
         effect: String(item.effect ?? "").slice(0, 400),
         quote: item.quote.trim().slice(0, 600),
       };
+      if (traceOnly) entry.source = anchor;
       // The class is what keeps "the agent skipped the rule" from being read as "the
       // rule caused harm" downstream. Only an explicit judged value is kept; records
       // from before the field existed simply carry none, and none never counts as harm.
@@ -98,7 +168,8 @@ export function sanitizeEvidence(parsed, memoryFile = null, trace = null) {
   }
 
   for (const item of Array.isArray(parsed.gaps) ? parsed.gaps : []) {
-    if (!hasQuote(item) || typeof item.proposedInstruction !== "string") continue;
+    const anchor = hasQuote(item);
+    if (!anchor || typeof item.proposedInstruction !== "string") continue;
     const gap = {
       mistake: String(item.mistake ?? "").slice(0, 400),
       proposedInstruction: item.proposedInstruction.trim().slice(0, 400),
@@ -106,6 +177,7 @@ export function sanitizeEvidence(parsed, memoryFile = null, trace = null) {
       quote: item.quote.trim().slice(0, 600),
       domain: item.domain === "orchestration" ? "orchestration" : "project",
     };
+    if (traceOnly) gap.source = anchor;
     if (typeof item.matchesGap === "string" && /^[0-9a-f]{16}$/.test(item.matchesGap.trim())) {
       gap.matchesGap = item.matchesGap.trim();
     }
@@ -152,11 +224,15 @@ async function analyzeOne({
   skillIndex = "(this repo has no skills)",
 }) {
   const raw = await readTranscript(transcript);
-  const distilled = distill(raw.events, {
-    ...transcript,
-    model: raw.model,
-    rawPath: raw.rawPath,
-  });
+  const distilled = distill(
+    raw.events,
+    {
+      ...transcript,
+      model: raw.model,
+      rawPath: raw.rawPath,
+    },
+    { evidencePolicy: raw.evidencePolicy },
+  );
 
   emitProgress("analyze:lane", {
     slot,
@@ -183,8 +259,8 @@ async function analyzeOne({
     };
   }
 
-  const prompt = renderPrompt("analysis", {
-    MEMORY_PATH: memoryFile.path,
+  const prompt = renderPrompt(raw.evidencePolicy === "trace-only" ? "analysis-trace-only" : "analysis", {
+    MEMORY_PATH: raw.evidencePolicy === "trace-only" ? path.basename(memoryFile.path) : memoryFile.path,
     INSTRUCTION_INDEX: renderInstructionIndex(memoryFile),
     SKILLS: skillIndex,
     OPEN_GAPS: openGapIndex,
@@ -221,7 +297,12 @@ async function analyzeOne({
 
   return {
     status: "ok",
-    evidence: sanitizeEvidence(parsed, memoryFile, distilled.trace),
+    evidence: sanitizeEvidence(
+      parsed,
+      memoryFile,
+      raw.evidencePolicy === "trace-only" ? distilled : distilled.trace,
+      raw.evidencePolicy,
+    ),
     usage: usageRecord(ranWith, result),
     distilled,
   };

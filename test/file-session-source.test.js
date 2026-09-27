@@ -15,6 +15,8 @@ import { approvedContentDigest, canonicalize, digest, snapshotDigest } from "../
 import { discover as discoverFileSource, SessionSourceError } from "../src/sources/file.js";
 import { distill } from "../src/distill.js";
 import { classifyInteraction } from "../src/interaction.js";
+import { sanitizeEvidence } from "../src/analyze.js";
+import { renderPrompt } from "../src/prompts.js";
 
 const fixtures = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -197,6 +199,133 @@ test("a trace-only session's distilled trace never points at a raw transcript", 
   const long = distill(read.events, meta, { maxTraceTokens: 5 });
   assert.equal(long.stats.elided, true);
   assert.doesNotMatch(long.trace, /raw transcript/);
+});
+
+test("selected source evidence is anchored only to retained approved event text", async () => {
+  const repo = projectRepo();
+  const { root } = makeSnapshot((payload) => {
+    payload.association.cwd = repo.root;
+    payload.events[0].text = "The approved event text is retained exactly.";
+    payload.events[1].input = { description: "[redacted]" };
+    payload.events[1].omitted = true;
+  });
+  const result = await discoverTranscripts({ repo, scope: projectScope(repo), config: config(), sessionSource: root });
+  const transcript = result.transcripts[0];
+  const read = await readTranscript(transcript);
+  const rawPath = "/private/transcripts/secret.jsonl";
+  const distilled = distill(
+    read.events,
+    { ...transcript, rawPath, cwd: rawPath },
+    { evidencePolicy: read.evidencePolicy },
+  );
+  const prompt = renderPrompt("analysis-trace-only", {
+    MEMORY_PATH: "AGENTS.md",
+    INSTRUCTION_INDEX: "[AG-001] Example instruction",
+    SKILLS: "(none)",
+    OPEN_GAPS: "(none)",
+    TRACE: distilled.trace,
+  });
+  assert.doesNotMatch(distilled.trace, /\/private\/transcripts|raw transcript|Open the raw/);
+  assert.doesNotMatch(prompt, /\/private\/transcripts|raw transcript|Open the raw/);
+  assert.match(prompt, /leave that claim out/);
+
+  const item = (quote) => ({ positive: [{ instruction: "AG-001", quote }] });
+  const exact = sanitizeEvidence(
+    item("The approved event text is retained exactly."),
+    null,
+    distilled,
+    read.evidencePolicy,
+  );
+  assert.equal(exact.positive.length, 1);
+  assert.deepEqual(exact.positive[0].source, {
+    sourceId: "sample-source",
+    sessionId: "sample-session",
+    revision: "rev-1",
+    approvedContentDigest: transcript.screening.approvedContentDigest,
+    eventId: "e1",
+    sourceRefs: ["sv-evidence:a"],
+    field: "text",
+    quoteSpan: { start: 0, end: 44 },
+  });
+  for (const usedRawTranscript of [undefined, false, "false"]) {
+    const response = { ...item("A sentence the model fabricated outright."), usedRawTranscript };
+    const clean = sanitizeEvidence(response, null, distilled, read.evidencePolicy);
+    assert.equal(clean.positive.length, 0);
+    assert.equal(clean.quotesNotInTrace, 1);
+  }
+  assert.throws(
+    () =>
+      sanitizeEvidence(
+        { ...item("A sentence the model fabricated outright."), usedRawTranscript: true },
+        null,
+        distilled,
+        read.evidencePolicy,
+      ),
+    /trace_only_raw_access_reported/,
+  );
+  assert.throws(
+    () => sanitizeEvidence(item("The approved event text is retained exactly."), null, null, read.evidencePolicy),
+    /trace_only_trace_missing/,
+  );
+  assert.equal(
+    sanitizeEvidence(item("sample-source/sample-session@rev-1"), null, distilled, read.evidencePolicy).positive.length,
+    0,
+  );
+  assert.equal(sanitizeEvidence(item("[redacted]"), null, distilled, read.evidencePolicy).positive.length, 0);
+  assert.equal(sanitizeEvidence(item("redacted"), null, distilled, read.evidencePolicy).positive.length, 0);
+  const visiblePlaceholder = distill([{ ...read.events[1], omitted: false }], transcript, {
+    evidencePolicy: read.evidencePolicy,
+  });
+  assert.equal(sanitizeEvidence(item("redacted"), null, visiblePlaceholder, read.evidencePolicy).positive.length, 0);
+  const foldedEvent = distill(
+    [{ ...read.events[0], text: "The approved\n event text is retained exactly." }],
+    transcript,
+    {
+      evidencePolicy: read.evidencePolicy,
+    },
+  );
+  const folded = sanitizeEvidence(item("approved event text is retained"), null, foldedEvent, read.evidencePolicy);
+  const { start, end } = folded.positive[0].source.quoteSpan;
+  assert.equal(foldedEvent.retained[0].fields[0].text.slice(start, end), "approved\n event text is retained");
+  assert.equal(
+    sanitizeEvidence(item("retained exactly. synthetic operation"), null, distilled, read.evidencePolicy).positive
+      .length,
+    0,
+  );
+});
+
+test("trace-only middle omission never offers a source lookup", async () => {
+  const repo = projectRepo();
+  const { root } = makeSnapshot((payload) => {
+    payload.association.cwd = repo.root;
+    payload.events = Array.from({ length: 24 }, (_, index) => ({
+      eventId: `e${index}`,
+      kind: "message",
+      role: index % 2 ? "assistant" : "user",
+      text: `Approved event ${index} with enough text to exercise the trace budget.`,
+      sourceRefs: [`sv-evidence:ref${index}`],
+      omitted: false,
+      redacted: false,
+    }));
+  });
+  const result = await discoverTranscripts({ repo, scope: projectScope(repo), config: config(), sessionSource: root });
+  const read = await readTranscript(result.transcripts[0]);
+  const distilled = distill(read.events, result.transcripts[0], {
+    evidencePolicy: read.evidencePolicy,
+    maxTraceTokens: 100,
+  });
+  assert.equal(distilled.stats.elided, true);
+  assert.match(distilled.trace, /middle of session omitted/);
+  assert.doesNotMatch(distilled.trace, /raw transcript|Open the raw|\.jsonl/);
+  assert.equal(
+    sanitizeEvidence(
+      { gaps: [{ proposedInstruction: "Do something.", quote: "middle of session omitted" }] },
+      null,
+      distilled,
+      read.evidencePolicy,
+    ).gaps.length,
+    0,
+  );
 });
 
 test("a projected self session is excluded even when its marker was missed", async () => {

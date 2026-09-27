@@ -268,6 +268,12 @@ current user and private, with regular files without hard links and no symlinks.
 cwd, git root, and remotes go through the same association tiers. Its origin harness
 remains visible in the corpus mix, while its source identity stays stable when the
 snapshot directory moves.
+Analysis of selected-source sessions uses only the screened trace. Its prompt offers
+abstention when retained events do not support a claim, and evidence quotes must match
+one retained event; stored citations include the approved revision, event, span, and
+opaque source references. Native transcript analysis retains its existing behavior.
+For quote matching, runs of whitespace fold to one space and leading/trailing
+whitespace is ignored; spans still point into the rendered event field.
 
 Collection is incremental. Codex alone can hold 10,000+ rollouts, so verdicts are cached in
 `.backpass/scan-cache.json` by path, mtime and size - re-scans cost only the new files.

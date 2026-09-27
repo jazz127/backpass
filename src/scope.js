@@ -6,6 +6,7 @@ import { expandHomePath, parseScopeKind, userStateDir } from "./config.js";
 import { associate as associateProject, associateRemote, globToRegExp } from "./discovery/association.js";
 import { UserError, info } from "./logger.js";
 import { gitProjectIdentity, gitToplevel, listWorktrees, normalizeRemote } from "./repo.js";
+import { assertPrivatePath } from "./state.js";
 
 /**
  * A run scope is the triple (weights surface, session corpus, state directory).
@@ -184,11 +185,12 @@ function syntheticUserRepo(home) {
   };
 }
 
-function explicitStateDir(raw, cwd, kind, repoRoot, home) {
+function explicitStateDir(raw, cwd, kind, scopeRoot, home) {
   if (!raw) return null;
   const expanded = expandUserPath(raw, home);
-  const absolute = path.resolve(cwd, expanded);
-  const userDefault = path.resolve(userStateDir());
+  const absolute = assertPrivatePath(path.resolve(cwd, expanded));
+  const repoRoot = realpathOrResolve(scopeRoot);
+  const userDefault = realpathOrResolve(userStateDir());
   const projectDefault = path.resolve(repoRoot, ".backpass");
   if (kind === "project" && (absolute === userDefault || absolute.startsWith(`${userDefault}${path.sep}`))) {
     throw new UserError("project state cannot use the user-scope state directory");
@@ -196,10 +198,10 @@ function explicitStateDir(raw, cwd, kind, repoRoot, home) {
   if (kind === "user" && (absolute === projectDefault || absolute.startsWith(`${projectDefault}${path.sep}`))) {
     throw new UserError("user state cannot use the project state directory");
   }
-  if (absolute === path.parse(absolute).root || absolute === path.resolve(repoRoot)) {
+  if (absolute === path.parse(absolute).root || absolute === repoRoot) {
     throw new UserError("--state-dir must name a dedicated private directory");
   }
-  if (path.resolve(repoRoot).startsWith(`${absolute}${path.sep}`)) {
+  if (repoRoot.startsWith(`${absolute}${path.sep}`)) {
     throw new UserError("--state-dir cannot contain the scope root");
   }
   if (

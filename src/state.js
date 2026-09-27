@@ -253,9 +253,9 @@ export class State {
 /**
  * Refuse link traversal on an explicit private state path, including existing parents. The only link
  * followed is a system one (e.g. macOS /tmp, /var): owned by root, in a root-owned directory nobody else
- * can write, and above the first directory this user owns. Checks apply to the canonical directory.
+ * can write, and above the first directory this user owns. Checks apply to, and return, the canonical path.
  */
-function assertPrivatePath(target, { privateLeaf = false } = {}) {
+export function assertPrivatePath(target, { privateLeaf = false } = {}) {
   const absolute = path.resolve(target);
   const uid = typeof process.getuid === "function" ? process.getuid() : null;
   let resolved = path.parse(absolute).root;
@@ -269,7 +269,7 @@ function assertPrivatePath(target, { privateLeaf = false } = {}) {
     try {
       stat = fs.lstatSync(part);
     } catch (error) {
-      if (error.code === "ENOENT") return;
+      if (error.code === "ENOENT") return path.join(resolved, ...segments.slice(index));
       throw new UserError(`cannot inspect private state path ${part}: ${error.message}`);
     }
     if (stat.isSymbolicLink() && !leaf && !userOwned && uid !== null && isSystemLink(stat, parent)) {
@@ -288,6 +288,7 @@ function assertPrivatePath(target, { privateLeaf = false } = {}) {
       throw new UserError(`private state directory has unsafe permissions: ${part}`);
     }
   }
+  return resolved;
 }
 
 function isSystemLink(link, parent) {

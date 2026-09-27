@@ -10,6 +10,7 @@ import { checkProposalRunContext, checkRunContext, inputInventory } from "../src
 import { State } from "../src/state.js";
 import { overridesFrom } from "../src/cli.js";
 import { loadConfig } from "../src/config.js";
+import { resolveScope } from "../src/scope.js";
 
 const cli = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin", "backpass.js");
 
@@ -179,6 +180,29 @@ test("private state path follows a root-owned system ancestor link", { skip: !pr
   make();
   locked.mock.restore();
   assert.ok(fs.statSync(path.join(target, "state", "scope.json")).isFile());
+});
+
+test("state dir containment is judged on the canonical path behind a system link", { skip: !process.getuid }, (t) => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(root, "alias-")));
+  const repoRoot = path.join(base, "real", "proj");
+  fs.mkdirSync(repoRoot, { recursive: true, mode: 0o700 });
+  const link = path.join(base, "link");
+  fs.symlinkSync(path.join(base, "real"), link);
+  const lstat = fs.lstatSync;
+  t.mock.method(fs, "lstatSync", (file, ...rest) => {
+    const stat = lstat(file, ...rest);
+    if (file !== link && file !== base && !base.startsWith(`${file}${path.sep}`)) return stat;
+    return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, {
+      uid: 0,
+      mode: file === base ? (stat.mode & ~0o7777) | 0o755 : stat.mode,
+    });
+  });
+  const repo = { root: repoRoot, realRoot: repoRoot, name: "proj", worktrees: [repoRoot], remotes: [] };
+  const scopeFor = (stateDir) =>
+    resolveScope(repoRoot, { scope: "project", "state-dir": stateDir }, loadConfig(repoRoot), repo);
+  assert.equal(scopeFor(path.join(link, "proj", ".bp")).stateDir, path.join(repoRoot, ".bp"));
+  assert.throws(() => scopeFor(path.join(link, "proj", ".git", "bp")), /Git internals/);
+  assert.throws(() => scopeFor(path.join(link, "proj")), /dedicated private directory/);
 });
 
 test("timeout and prompt retry flags override config for one invocation", () => {

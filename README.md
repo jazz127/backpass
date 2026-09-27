@@ -260,7 +260,7 @@ the same tiers, sample and cap - see [Your other machines](#your-other-machines)
 
 To select a normalized `external-session-source/v1` snapshot instead, pass
 `--session-source <snapshot-directory-or-manifest>` to `scan`, `analyze`, `propose`,
-`status`, or the default run. Selection is exclusive: no local harness stores or SSH
+`status`, `apply`, or the default run. Selection is exclusive: no local harness stores or SSH
 hosts are scanned. `--session-source-mode exclusive` makes that choice explicit; other
 modes are unsupported. A malformed or unsafe selected snapshot fails the run by name.
 The selected path is resolved once; everything inside the snapshot must be owned by the
@@ -272,6 +272,9 @@ Analysis of selected-source sessions uses only the screened trace. Its prompt of
 abstention when retained events do not support a claim, and evidence quotes must match
 one retained event; stored citations include the approved revision, event, span, and
 opaque source references. Native transcript analysis retains its existing behavior.
+A proposal built from a selected source records that source's snapshot digest, and
+`apply` refuses it unless the same unchanged snapshot is passed again with
+`--session-source`.
 For quote matching, runs of whitespace fold to one space and leading/trailing
 whitespace is ignored; spans still point into the rendered event field. A quote that
 overlaps text the distiller added (truncation markers, output-size notes, redaction
@@ -362,7 +365,9 @@ draw repeated non-compliance, synthesis is steered to restructure the paragraph 
 items instead of adding a cosmetic label.
 
 Results are cached per transcript, keyed to the transcript's content, the effective
-memory-surface hash, and the analysis-index version. The surface hash covers the memory-file
+memory-surface hash, and the analysis-index version, plus the distiller version, a
+selected source's snapshot, revision, and screening policy, and the analysis route (agent,
+model, effort, and credential-seat fingerprint). The surface hash covers the memory-file
 set plus every project skill's name and description. Edit a memory file or skill description
 and the evidence correctly re-computes; edit only a skill body and the cache remains valid
 because bodies are inspected only for failed-trigger confirmation. A repo without skills
@@ -403,7 +408,7 @@ majority-excluded cluster, including a pure-orchestration cluster, remains clear
 as a report-only diagnostic rather than becoming an instruction in the project's memory
 file; an uncorroborated pure-orchestration singleton stays hidden.
 
-Only evidence with the current transcript, memory-surface, and analysis-index cache key,
+Only evidence whose full cache key (above) is current,
 stamped with one of the two interaction categories, and belonging to this run's selected
 sample is folded into a proposal. A transcript that fell outside the time window or
 `maxTranscripts` cap, disappeared, or still has legacy evidence can leave an evidence file
@@ -662,9 +667,11 @@ because its adapter accepts sessions while logged out). Session creation may wai
 minutes for a cold-starting adapter; the remaining probe operations retain their shorter
 10-20 second limits. A potentially transient busy-harness miss retries once and is not cached;
 durable verdicts are cached in
-`.backpass/agent-probe-cache.json` for 12h (30min for negatives). Pi and OpenCode entries
-are re-probed when their credential or auth-file state changes; `--force` re-probes every
-entry. The probe is a filter, not a promise: if the chosen harness answers `AUTH_REQUIRED`,
+`.backpass/agent-probe-cache.json` for 12h (30min for negatives). An entry is re-probed
+when the session source, memory surface, or effort changes, or when its harness's
+credential seat (credential home, account identity, or the selected provider's API key)
+changes; `--force` re-probes every entry. The probe is a filter, not a promise: if the
+chosen harness answers `AUTH_REQUIRED`,
 rejects the model, or returns a clean exit with no output at all (a provider account out
 of quota or credits, often swallowed before it reaches stderr) mid-run, backpass falls
 through to the next candidate and says so. The one blank exit that never falls through is

@@ -30,7 +30,7 @@ import { sha256 } from "./state.js";
  * Verdicts are cached in `.backpass/agent-probe-cache.json` (12h for ok, 30min for
  * negatives) and memoized for the run. An acpx version change invalidates every entry;
  * Probe keys include the source and memory context, effort, and a credential-seat
- * fingerprint; Codex also fingerprints its selected auth file.
+ * fingerprint (`providerAuthState`) of the model the candidate resolves to.
  *
  * A busy harness (another backpass run, a wedged ACP session) looks like a probe
  * timeout, a bare `exit 1`, or an empty advertised-model list. Those retry once with

@@ -139,15 +139,17 @@ export function distill(events, meta, options = {}) {
     .filter((l) => l !== null)
     .join("\n");
 
-  const footer = [
-    "",
-    "---",
-    `raw transcript: ${meta.rawPath}`,
-    "Tool calls above are one-line summaries and tool output is truncated. Open the raw",
-    "transcript only if a specific claim needs the full text.",
-  ].join("\n");
+  const footer = meta.rawPath
+    ? [
+        "",
+        "---",
+        `raw transcript: ${meta.rawPath}`,
+        "Tool calls above are one-line summaries and tool output is truncated. Open the raw",
+        "transcript only if a specific claim needs the full text.",
+      ].join("\n")
+    : "";
 
-  const { body, elided } = capTrace(lines.join("\n").trim(), maxTraceTokens);
+  const { body, elided } = capTrace(lines.join("\n").trim(), maxTraceTokens, Boolean(meta.rawPath));
   const trace = `${header}\n${body}\n${footer}\n`;
 
   return {
@@ -167,7 +169,7 @@ export function distill(events, meta, options = {}) {
  * (the task as stated) and the tail (how it actually ended) and elide the middle - the
  * raw transcript path in the footer remains the escape hatch for anything in between.
  */
-function capTrace(body, maxTraceTokens) {
+function capTrace(body, maxTraceTokens, hasRaw) {
   if (estimateTokens(body) <= maxTraceTokens) return { body, elided: false };
   const budgetChars = maxTraceTokens * 4;
   const headChars = Math.floor(budgetChars * 0.45);
@@ -176,7 +178,7 @@ function capTrace(body, maxTraceTokens) {
   const tail = body.slice(-tailChars);
   const droppedTokens = estimateTokens(body) - estimateTokens(head) - estimateTokens(tail);
   return {
-    body: `${head}\n\n[... middle of session elided: ~${droppedTokens} tokens. Open the raw transcript below if a claim needs it ...]\n\n${tail}`,
+    body: `${head}\n\n[... middle of session elided: ~${droppedTokens} tokens.${hasRaw ? " Open the raw transcript below if a claim needs it" : ""} ...]\n\n${tail}`,
     elided: true,
   };
 }

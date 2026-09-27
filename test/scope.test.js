@@ -36,7 +36,9 @@ test("resolveScope project uses the checkout and .backpass state", () => {
 test("resolveScope user uses homedir weights and isolated config state", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-user-home-"));
   const prevXdg = process.env.XDG_CONFIG_HOME;
+  const prevCodexHome = process.env.CODEX_HOME;
   process.env.XDG_CONFIG_HOME = path.join(home, ".config");
+  delete process.env.CODEX_HOME;
   try {
     const config = loadConfig(null, {}, { kind: "user" });
     let associationCalls = 0;
@@ -64,6 +66,8 @@ test("resolveScope user uses homedir weights and isolated config state", () => {
   } finally {
     if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = prevXdg;
+    if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = prevCodexHome;
   }
 });
 

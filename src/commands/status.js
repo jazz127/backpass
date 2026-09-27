@@ -62,6 +62,15 @@ export async function cmdStatus(ctx) {
   if (ctx.flags.json) {
     json({
       repo: repo.name,
+      ...(ctx.sessionSource
+        ? {
+            sessionSource: {
+              sourceId: ctx.sessionSource.sourceId,
+              snapshotDigest: ctx.sessionSource.snapshotDigest,
+              coverage: ctx.sessionSource.coverage,
+            },
+          }
+        : {}),
       budgets,
       crossSurfaceDuplicates: duplicates,
       evidence: counts,
@@ -76,6 +85,10 @@ export async function cmdStatus(ctx) {
   }
 
   out(`${color.bold(ctx.scope?.kind === "user" ? "user scope" : repo.name)} ${color.dim(repo.root)}`);
+  if (ctx.sessionSource)
+    out(
+      `  session source  ${ctx.sessionSource.sourceId} · ${ctx.sessionSource.coverage.published} approved session(s)`,
+    );
   out("");
 
   out(color.dim("BUDGET (always-loaded)"));

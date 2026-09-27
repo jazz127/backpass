@@ -272,6 +272,15 @@ export async function analyzeTranscripts({
   };
   const priorHashes = new Set();
   const transcriptMetadata = (transcript) => ({
+    ...(transcript.sourceKind === "external"
+      ? {
+          sourceKind: transcript.sourceKind,
+          sourceId: transcript.sourceId,
+          sessionId: transcript.sessionId,
+          revision: transcript.revision,
+          sourceHostAlias: transcript.sourceHostAlias,
+        }
+      : {}),
     harness: transcript.harness,
     id: transcript.id,
     identity: transcriptIdentity(transcript),

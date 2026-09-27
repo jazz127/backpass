@@ -10,6 +10,7 @@ import { printScopeNote, resolveScope } from "./scope.js";
 import { printTargetNote, resolveTarget, TARGET_COMMANDS } from "./target.js";
 import { State } from "./state.js";
 import { AgentResolver } from "./agents.js";
+import { discover as discoverFileSource } from "./sources/file.js";
 
 import { cmdInit } from "./commands/init.js";
 import { cmdScan } from "./commands/scan.js";
@@ -37,6 +38,8 @@ const OPTIONS = {
   jobs: { type: "string" },
   strict: { type: "boolean" },
   host: { type: "string", multiple: true },
+  "session-source": { type: "string" },
+  "session-source-mode": { type: "string" },
   "include-cursor-ide": { type: "boolean" },
 
   budget: { type: "string" },
@@ -95,6 +98,8 @@ COLLECT SAMPLES
   --host <dest>            also collect from this SSH host this run (repeatable;
                            "none" collects locally only). Configure hosts once in
                            ~/.config/backpass/config.json; a repo file may not set them
+  --session-source <path>  read an approved v1 snapshot directory or manifest
+  --session-source-mode exclusive  use only the selected source (default with --session-source)
   --include-cursor-ide     also scan the Cursor IDE store (best-effort, v1.1 preview)
   --limit <n>              analyze at most N transcripts this run (newest first)
   --max-transcripts <n>    cap per run; past it a recency-weighted sticky sample
@@ -256,6 +261,18 @@ export async function main(argv) {
   }
 
   try {
+    if (values["session-source-mode"] && !values["session-source"]) {
+      throw new UserError("--session-source-mode requires --session-source");
+    }
+    if (values["session-source-mode"] && values["session-source-mode"] !== "exclusive") {
+      throw new UserError(
+        `unsupported --session-source-mode "${values["session-source-mode"]}" (only exclusive is supported)`,
+      );
+    }
+    if (values["session-source"] && !["run", "scan", "analyze", "propose", "status"].includes(commandName)) {
+      throw new UserError(`--session-source does not apply to ${commandName}`);
+    }
+    const sessionSource = values["session-source"] ? discoverFileSource(values["session-source"]) : null;
     const kind = parseScopeKind(values.scope);
     const overrides = overridesFrom(values);
     let repo = null;
@@ -303,6 +320,7 @@ export async function main(argv) {
       positionals: positionals.slice(1),
       version: VERSION,
       strict: Boolean(values.strict),
+      sessionSource,
       limit: values.limit ? toInt(values.limit, "--limit") : null,
     };
 

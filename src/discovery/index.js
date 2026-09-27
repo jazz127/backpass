@@ -19,6 +19,8 @@ import { emitProgress } from "../progress.js";
 import { warn } from "../logger.js";
 import { transcriptIdentity } from "../transcript.js";
 import { passesProjectFilter } from "../scope.js";
+import * as fileSource from "../sources/file.js";
+import { SELF_SESSION_SENTINEL } from "../sentinel.js";
 
 export const ADAPTERS = Object.assign(Object.create(null), {
   claude,
@@ -58,13 +60,15 @@ export function getAdapter(harness) {
  * no budget of their own. A session that exists on two machines - a synced or copied
  * store - is kept once, or one session would satisfy `minGapEvidence` by itself.
  */
-export async function discoverTranscripts({
+async function discoverNativeTranscripts({
   repo,
   scope = null,
   config,
   strict = false,
   harnesses = null,
   now = Date.now(),
+  collectHostsFn = collectHosts,
+  enumerateNative = null,
 }) {
   const cutoffMs = sinceCutoff(config.discovery.since, now);
   const selected = harnesses || config.discovery.harnesses;
@@ -105,6 +109,7 @@ export async function discoverTranscripts({
             associateFn,
             stateDir,
             userFilter,
+            enumerateNative,
           })
         : discoverFiles(adapter, {
             repo,
@@ -116,6 +121,7 @@ export async function discoverTranscripts({
             associateFn,
             stateDir,
             userFilter,
+            enumerateNative,
             markDirty: () => {
               cacheDirty = true;
             },
@@ -147,7 +153,7 @@ export async function discoverTranscripts({
   const perHost = [];
   const remoteMasters = [];
   if (hosts.length) {
-    const collected = await collectHosts({
+    const collected = await collectHostsFn({
       hosts,
       harnesses: selected.filter((h) => getAdapter(h)),
       cutoffMs,
@@ -174,6 +180,104 @@ export async function discoverTranscripts({
     cutoffMs,
     remoteMasters,
   };
+}
+
+/** Source dispatch stays separate from the origin harness used for corpus reporting. */
+export const SOURCE_PROVIDERS = {
+  native: { discover: discoverNativeTranscripts, read: readNativeTranscript },
+  external: { discover: discoverExternalTranscripts, read: fileSource.read },
+};
+
+export async function discoverTranscripts(options) {
+  if (options.sessionSource) return SOURCE_PROVIDERS.external.discover(options);
+  return SOURCE_PROVIDERS.native.discover(options);
+}
+
+function discoverExternalTranscripts({ repo, scope = null, config, strict = false, sessionSource, now = Date.now() }) {
+  const snapshot =
+    typeof sessionSource === "string"
+      ? fileSource.discover(sessionSource)
+      : fileSource.assertValidatedSnapshot(sessionSource);
+  const cutoffMs = sinceCutoff(config.discovery.since, now);
+  const transcripts = [];
+  const perHarness = {};
+  const identities = new Set();
+  const userFilter = scope?.kind === "user";
+
+  for (const descriptor of snapshot.descriptors) {
+    const harness = descriptor.originHarness;
+    const stats = (perHarness[harness] ??= { scanned: 0, matched: 0, cached: 0, skipped: 0, self: 0, error: null });
+    stats.scanned += 1;
+    const firstUser = descriptor.events.find((event) => event.kind === "message" && event.role === "user");
+    if (descriptor.selfGenerated || firstUser?.text.startsWith(SELF_SESSION_SENTINEL)) {
+      stats.self += 1;
+      continue;
+    }
+    if (cutoffMs && (!descriptor.startedAt || descriptor.startedAt < cutoffMs)) {
+      stats.skipped += 1;
+      continue;
+    }
+    const input = {
+      cwd: descriptor.association.cwd || null,
+      gitRoot: descriptor.association.gitRoot || null,
+      remotes: descriptor.association.remotes,
+    };
+    const hostAlias = descriptor.association.hostAlias || null;
+    const association = hostAlias
+      ? scope?.associateRemote
+        ? scope.associateRemote(input, { facts: {}, host: hostAlias, home: "" })
+        : associate(input, repo, { facts: {}, host: hostAlias, worktreeGlobs: config.discovery.worktreeGlobs })
+      : scope?.associate
+        ? scope.associate(input)
+        : associate(input, repo, { worktreeGlobs: config.discovery.worktreeGlobs });
+    if (!passesStrict(association, strict)) {
+      stats.skipped += 1;
+      continue;
+    }
+    const transcript = {
+      sourceKind: "external",
+      sourceId: snapshot.sourceId,
+      sessionId: descriptor.sessionId,
+      revision: descriptor.revision,
+      harness,
+      id: `external-${snapshot.sourceId}-${descriptor.sessionId}`,
+      nativeId: descriptor.nativeSessionId || descriptor.sessionId,
+      path: null,
+      cwd: input.cwd,
+      gitBranch: descriptor.gitBranch,
+      title: descriptor.title,
+      model: descriptor.model,
+      startedAt: descriptor.startedAt,
+      mtimeMs: descriptor.mtimeMs,
+      bytes: descriptor.bytes,
+      contentSignature: descriptor.contentSignature,
+      association,
+      project: association?.project || null,
+      projectRoot: association?.projectRoot || null,
+      sourceHostAlias: hostAlias,
+      host: null,
+      remote: null,
+      interactionSignals: {},
+      interaction: { autonomous: "non-interactive", interactive: "interactive" }[descriptor.interactionClass],
+      timeBasis: descriptor.timeBasis,
+      display: descriptor.display,
+      screening: descriptor.screening,
+    };
+    transcript.identity = transcriptIdentity(transcript);
+    transcript.interaction = classifyInteraction(transcript);
+    if (userFilter && !passesProjectFilter(transcript, config)) {
+      stats.skipped += 1;
+      continue;
+    }
+    if (identities.has(transcript.identity)) continue;
+    identities.add(transcript.identity);
+    fileSource.bind(transcript, descriptor);
+    transcripts.push(transcript);
+    stats.matched += 1;
+  }
+  scope?.normalizeProjects?.(transcripts);
+  transcripts.sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0));
+  return { transcripts, perHarness, perHost: [], cutoffMs, remoteMasters: [], source: snapshot };
 }
 
 function hostSummary(result) {
@@ -280,8 +384,13 @@ function tierCounts(found) {
   return tiers;
 }
 
-async function discoverDirect(adapter, { repo, config, cutoffMs, strict, stats, associateFn, stateDir, userFilter }) {
-  const rows = await adapter.discover({ cutoffMs, repo, config });
+async function discoverDirect(
+  adapter,
+  { repo, config, cutoffMs, strict, stats, associateFn, stateDir, userFilter, enumerateNative },
+) {
+  const rows = await (enumerateNative
+    ? enumerateNative(adapter, { cutoffMs, repo, config })
+    : adapter.discover({ cutoffMs, repo, config }));
   const out = [];
   for (const row of rows) {
     stats.scanned += 1;
@@ -306,9 +415,11 @@ async function discoverDirect(adapter, { repo, config, cutoffMs, strict, stats, 
 
 function discoverFiles(
   adapter,
-  { repo, config, cutoffMs, strict, stats, cache, markDirty, associateFn, stateDir, userFilter },
+  { repo, config, cutoffMs, strict, stats, cache, markDirty, associateFn, stateDir, userFilter, enumerateNative },
 ) {
-  const candidates = adapter.enumerate({ cutoffMs, repo, config });
+  const candidates = enumerateNative
+    ? enumerateNative(adapter, { cutoffMs, repo, config })
+    : adapter.enumerate({ cutoffMs, repo, config });
   const out = [];
 
   for (const candidate of candidates) {
@@ -416,6 +527,13 @@ function toTranscript(adapter, row, association, id, { host = null, remote = nul
  * the cache holds its events, exactly the situation a local SQLite session is already in.
  */
 export async function readTranscript(transcript) {
+  const kind = transcript.sourceKind || "native";
+  const provider = SOURCE_PROVIDERS[kind];
+  if (!provider) throw new Error(`no source provider for ${kind}`);
+  return provider.read(transcript);
+}
+
+async function readNativeTranscript(transcript) {
   const adapter = getAdapter(transcript.harness);
   if (!adapter) throw new Error(`no adapter for harness ${transcript.harness}`);
 

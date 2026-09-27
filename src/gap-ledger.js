@@ -39,16 +39,17 @@ import { sha256 } from "./state.js";
  *    never adds a count. Persisted observations only contribute when that identity belongs
  *    to the current selected sample, so sessions outside the window or cap cannot skew fold.
  *  - A gap is a fact about its session: re-analysis that no longer mentions it is model
- *    noise, not the session changing, so native observations are only ever replaced, not
- *    removed by absence. They retire when the memory surface gains content
+ *    noise, not the session changing, so observations are only ever replaced, not removed
+ *    by absence. They retire in exactly two ways: the memory surface gains content
  *    that covers the gap - a memory-file instruction or a skill's description/body
  *    (`GAP_COVERED_THRESHOLD`, the `reanchor` bar) - or the sighting
  *    has waited longer than `gapLedgerMaxAge` for a partner, counted from when backpass
  *    first saw it (re-analysis never refreshes that clock; session age itself is already
  *    bounded by discovery's `since` at entry). Keying to the memory hash instead would
  *    reset the count on every unrelated edit, which is the failure this ledger fixes.
- *    Trace-only observations additionally retire when their approved revision or evidence
- *    key changes; native observations outside the selected sample stay in the ledger.
+ *    Prompts, consolidation, and fold read a filtered copy (`filterGapLedger`) that drops
+ *    other sources' sightings, stale trace-only revisions or evidence keys, and native
+ *    sightings of a selected session whose content changed; the persisted ledger keeps them.
  *  - The file is fail-soft: a missing or corrupt ledger is rebuilt from this run's
  *    evidence, which is exactly what the pre-ledger fold saw.
  */
@@ -258,7 +259,11 @@ export function recordGapObservations(ledger, evidenceRecords, options = {}) {
   return recorded;
 }
 
-/** Keep selected trace observations only when their exact approved revision is fresh. */
+/**
+ * Narrow a ledger copy to the sightings this run may show a model or fold: selected trace
+ * observations only at their exact approved revision. Mutates its argument; never pass the
+ * ledger that gets persisted.
+ */
 export function filterGapLedger(ledger, evidenceRecords, selectedTranscripts = [], options = {}) {
   const current = new Map(
     evidenceRecords.map((record) => [record.transcript?.identity || record.transcript?.id, record]),

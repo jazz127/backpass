@@ -120,37 +120,66 @@ export function opencodeAuthFilePath({ env = process.env, homedir = os.homedir()
   return path.join(base, "opencode", "auth.json");
 }
 
+const PROVIDER_KEY_ENV = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "XAI_API_KEY", "OPENROUTER_API_KEY"];
+
+/** Where each harness keeps its credentials, the file naming its account, and the key env it reads. */
+function credentialSeat(agent, { env, homedir }) {
+  const dir = (name, fallback) => (typeof env[name] === "string" && env[name].trim() ? env[name].trim() : fallback);
+  if (agent === "codex") {
+    const home = dir("CODEX_HOME", path.join(homedir, ".codex"));
+    return { home, accountFile: path.join(home, "auth.json"), keyEnv: ["OPENAI_API_KEY", "CODEX_API_KEY"] };
+  }
+  if (agent === "claude") {
+    const override = dir("CLAUDE_CONFIG_DIR", "");
+    return {
+      home: override || path.join(homedir, ".claude"),
+      accountFile: override ? path.join(override, ".claude.json") : path.join(homedir, ".claude.json"),
+      keyEnv: ["ANTHROPIC_API_KEY"],
+    };
+  }
+  if (agent === "pi") {
+    const accountFile = piAuthFilePath({ env, homedir });
+    return { home: path.dirname(accountFile), accountFile, keyEnv: PROVIDER_KEY_ENV };
+  }
+  if (agent === "opencode") {
+    const accountFile = opencodeAuthFilePath({ env, homedir });
+    return { home: path.dirname(accountFile), accountFile, keyEnv: PROVIDER_KEY_ENV };
+  }
+  if (agent === "grok") return { home: path.join(homedir, ".grok"), accountFile: null, keyEnv: ["XAI_API_KEY"] };
+  if (agent === "cursor") return { home: path.join(homedir, ".cursor"), accountFile: null, keyEnv: ["CURSOR_API_KEY"] };
+  return { home: null, accountFile: null, keyEnv: [] };
+}
+
+const ACCOUNT_FIELDS = new Set(["account_id", "accountId", "accountUuid", "email", "emailAddress"]);
+
+/** Stable account identifiers (`path=value`) in a credential file; tokens and keys are never read. */
+function accountIdentifiers(value, prefix = "", depth = 0) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || depth > 3) return [];
+  return Object.entries(value).flatMap(([key, child]) =>
+    ACCOUNT_FIELDS.has(key) && (typeof child === "string" || typeof child === "number")
+      ? [`${prefix}${key}=${child}`]
+      : accountIdentifiers(child, `${prefix}${key}.`, depth + 1),
+  );
+}
+
+/**
+ * Fingerprint of the credential seat one harness runs under: its credential home, the
+ * account identifiers readable from its local credential file, and a hash of the API-key
+ * env vars that harness reads. Token refreshes and other providers' keys leave it stable;
+ * with no readable account id the credential home is the seat.
+ */
 export function providerAuthState(agent, options = {}) {
   const { env = process.env, homedir = os.homedir() } = options;
-  const file =
-    options.authFile === undefined
-      ? agent === "pi"
-        ? piAuthFilePath({ env, homedir })
-        : agent === "opencode"
-          ? opencodeAuthFilePath({ env, homedir })
-          : agent === "codex"
-            ? path.join(env.CODEX_HOME || path.join(homedir, ".codex"), "auth.json")
-            : null
-      : options.authFile;
+  const seat = credentialSeat(agent, { env, homedir });
   const hash = crypto.createHash("sha256");
-  hash.update(`${agent}\0${file || ""}\0`);
-  for (const name of ["HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "PI_CODING_AGENT_DIR", "XDG_DATA_HOME"]) {
-    hash.update(`${name}\0${env[name] || ""}\0`);
-  }
-  if (file) {
-    try {
-      hash.update(fs.readFileSync(file));
-    } catch {
-      hash.update("missing");
+  hash.update(`${agent}\0${seat.home || ""}\0`);
+  const account = seat.accountFile ? readJsonObject(seat.accountFile) : null;
+  for (const id of accountIdentifiers(account).sort()) hash.update(`\0${id}`);
+  for (const name of seat.keyEnv) {
+    if (typeof env[name] === "string" && env[name]) {
+      hash.update(`\0${name}\0${crypto.createHash("sha256").update(env[name]).digest("hex")}`);
     }
   }
-  const credentialEnv = Object.entries(env)
-    .filter(
-      ([name, value]) =>
-        typeof value === "string" && /(?:^|_)(?:API_KEY|ACCESS_TOKEN|AUTH_TOKEN|SECRET_ACCESS_KEY)$/.test(name),
-    )
-    .sort(([left], [right]) => left.localeCompare(right));
-  for (const [name, value] of credentialEnv) hash.update(`\0${name}\0${value}`);
   return hash.digest("hex");
 }
 

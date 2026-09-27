@@ -1,6 +1,12 @@
 import { consolidateGapLedger } from "../consolidate.js";
 import { foldEvidence } from "../fold.js";
-import { filterGapLedger, ledgerGapObservations, pruneGapLedger, recordGapObservations } from "../gap-ledger.js";
+import {
+  filterGapLedger,
+  ledgerGapObservations,
+  mergeGapEntries,
+  pruneGapLedger,
+  recordGapObservations,
+} from "../gap-ledger.js";
 import { synthesizeProposal } from "../synthesize.js";
 import { ProposalViolation } from "../proposal.js";
 import { formatCorpusMix, INTERACTIVE, NON_INTERACTIVE } from "../interaction.js";
@@ -64,14 +70,13 @@ export async function foldForRun(ctx, memoryFile, memoryHash, skills = [], trans
     );
   });
 
+  const traceOnly =
+    Boolean(ctx.sessionSource) || transcripts.some((transcript) => transcript.sourceKind === "external");
   const ledger = state.readGapLedger();
-  filterGapLedger(ledger, relevant, transcripts, {
-    sourceKind:
-      ctx.sessionSource || transcripts.some((transcript) => transcript.sourceKind === "external")
-        ? "external"
-        : "native",
-  });
   recordGapObservations(ledger, relevant, { skills });
+  const gapView = filterGapLedger(structuredClone(ledger), relevant, transcripts, {
+    sourceKind: traceOnly ? "external" : "native",
+  });
   // Consolidate after recording, so the pass sees this run's sightings too: two
   // sessions coining the same brand-new gap in one parallel fan-out can only line up
   // here. One bounded judged call; a failure degrades to lexical identity and the run
@@ -79,17 +84,20 @@ export async function foldForRun(ctx, memoryFile, memoryHash, skills = [], trans
   // Skills join the coverage check: a gap resolved by an extraction or a skill fix
   // retires instead of haunting the open-gap index until it expires.
   const consolidation = await consolidateGapLedger({
-    ledger,
+    ledger: gapView,
     memoryPath: memoryFile.path,
     config: ctx.config,
     repo: ctx.repo,
     modelCwd: ctx.scope?.modelCwd || ctx.repo?.root,
-    traceOnly: Boolean(ctx.sessionSource) || transcripts.some((transcript) => transcript.sourceKind === "external"),
+    traceOnly,
   });
-  pruneGapLedger(ledger, { memoryFile, memoryPath: memoryFile.path, skills, maxAge: gapLedgerMaxAge });
+  if (!traceOnly && consolidation.merges) mergeGapEntries(ledger, consolidation.merges);
+  for (const target of [ledger, gapView]) {
+    pruneGapLedger(target, { memoryFile, memoryPath: memoryFile.path, skills, maxAge: gapLedgerMaxAge });
+  }
   state.writeGapLedger(ledger);
 
-  const gapObservations = ledgerGapObservations(ledger, memoryFile.path, skills).filter((observation) =>
+  const gapObservations = ledgerGapObservations(gapView, memoryFile.path, skills).filter((observation) =>
     selectedGapSessions.has(observation.sessionId),
   );
   const summary = foldEvidence(relevant, {

@@ -60,7 +60,7 @@ function firstMistake(entry) {
 
 /**
  * Run the consolidation call and apply the merges to `ledger` in place.
- * Returns `{ merged, usage }`, `{ skipped }`, or `{ failed }` - never throws for a
+ * Returns `{ merged, merges, usage }`, `{ skipped }`, or `{ failed }` - never throws for a
  * model-side failure, because a run without consolidation is still a valid run.
  */
 export async function consolidateGapLedger({ ledger, memoryPath, config, repo, modelCwd = null, traceOnly = false }) {
@@ -103,5 +103,5 @@ export async function consolidateGapLedger({ ledger, memoryPath, config, repo, m
   }
 
   const merged = mergeGapEntries(ledger, parsed.merges);
-  return { merged, usage: usageRecord(ranWith, result) };
+  return { merged, merges: parsed.merges, usage: usageRecord(ranWith, result) };
 }

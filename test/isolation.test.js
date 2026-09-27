@@ -36,6 +36,7 @@ const { resolveMemoryFiles } = await import("../src/memory.js");
 const { filterGapLedger, recordGapObservations, renderOpenGapIndex } = await import("../src/gap-ledger.js");
 const { AgentResolver } = await import("../src/agents.js");
 const { foldForRun } = await import("../src/commands/propose.js");
+const { transcriptIdentity } = await import("../src/transcript.js");
 
 function recordedCalls() {
   if (!fs.existsSync(log)) return [];
@@ -263,6 +264,11 @@ test("foreign and superseded gap text never enters the open-gap index or count",
 test("consolidation prompt excludes native and revoked ledger observations", async () => {
   const h = setup({ agent: "claude", model: null, effort: null });
   const transcript = h.transcript;
+  const nativeSighting = {
+    sourceKind: "native",
+    firstObservedAt: new Date().toISOString(),
+    phrasings: ["Native secret gap"],
+  };
   h.state.writeGapLedger({
     version: 1,
     entries: {
@@ -270,7 +276,7 @@ test("consolidation prompt excludes native and revoked ledger observations", asy
         id: "foreign",
         memoryPath: "AGENTS.md",
         proposedInstruction: "Native secret gap",
-        sessions: { native: { sourceKind: "native", phrasings: ["Native secret gap"] } },
+        sessions: { native: nativeSighting },
       },
       revoked: {
         id: "revoked",
@@ -319,4 +325,63 @@ test("consolidation prompt excludes native and revoked ledger observations", asy
   const prompt = recordedCalls().at(-1).prompt;
   assert.match(prompt, /Bind publication attestation/);
   assert.doesNotMatch(prompt, /Native secret gap|Revoked old gap/);
+  assert.deepEqual(h.state.readGapLedger().entries.foreign.sessions, { native: nativeSighting });
+});
+
+test("a grown native session keeps its unmentioned sighting on disk but out of prompts", async () => {
+  const h = setup({ agent: "claude", model: null, effort: null });
+  const grown = {
+    harness: "claude",
+    id: "native-a",
+    nativeId: "native-a",
+    interaction: "interactive",
+    mtimeMs: 2,
+    bytes: 200,
+  };
+  const identity = (grown.identity = transcriptIdentity(grown));
+  const staleSighting = {
+    sourceKind: "native",
+    contentDigest: "1:100",
+    firstObservedAt: new Date().toISOString(),
+    phrasings: ["Stale grown gap"],
+  };
+  h.state.writeGapLedger({
+    version: 1,
+    entries: {
+      stale: {
+        id: "stale",
+        memoryPath: "AGENTS.md",
+        proposedInstruction: "Stale grown gap",
+        sessions: { [identity]: staleSighting },
+      },
+    },
+  });
+  h.state.writeEvidence(grown, {
+    status: "ok",
+    transcript: grown,
+    memoryPath: "AGENTS.md",
+    memoryHash: "memory-a",
+    key: evidenceKey(grown, "memory-a"),
+    positive: [],
+    negative: [],
+    gaps: ["Bind publication attestation to its exact commit.", "Keep credential seats isolated per run."].map(
+      (proposedInstruction) => ({
+        proposedInstruction,
+        mistake: "current mistake",
+        quote: "I checked the sample.",
+        recurrenceRisk: "high",
+      }),
+    ),
+  });
+  await foldForRun(
+    { config: { ...h.config, minGapEvidence: 2, gapLedgerMaxAge: "90d" }, repo: { root: h.root } },
+    h.memoryFile,
+    "memory-a",
+    [],
+    [grown],
+  );
+  const prompt = recordedCalls().at(-1).prompt;
+  assert.match(prompt, /Bind publication attestation/);
+  assert.doesNotMatch(prompt, /Stale grown gap/);
+  assert.deepEqual(h.state.readGapLedger().entries.stale.sessions, { [identity]: staleSighting });
 });

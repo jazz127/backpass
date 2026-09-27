@@ -4,6 +4,8 @@ import { corpusMix, formatCorpusMix } from "../interaction.js";
 import { color, info, json, out } from "../logger.js";
 import { attachSiblingClones } from "../repo.js";
 import { closeSshMasters } from "../discovery/remote/ssh.js";
+import { capTranscripts } from "../sample.js";
+import { checkRunContext } from "../run-context.js";
 
 /** Shared by every command that needs the transcript set. */
 export async function discoverForRun(ctx) {
@@ -42,6 +44,9 @@ export async function cmdScan(ctx) {
 
 async function cmdScanCore(ctx) {
   const { transcripts, perHarness, perHost = [], truncated } = await discoverForRun(ctx);
+  const runContext = ctx.flags["state-dir"]
+    ? checkRunContext(ctx, capTranscripts({ transcripts }, ctx.config).transcripts, { start: true })
+    : null;
   const mix = corpusMix(transcripts);
 
   if (ctx.flags.json) {
@@ -51,6 +56,7 @@ async function cmdScanCore(ctx) {
       perHarness,
       perHost,
       mix,
+      ...(runContext ? { runContext } : {}),
       transcripts: transcripts.map((transcript) => {
         const serialized = { ...transcript };
         delete serialized.remote;

@@ -31,11 +31,13 @@ export const STATE_EXCLUDE_LINE = `${STATE_DIRNAME}/`;
 export class State {
   /**
    * @param {string} repoRoot project checkout, or ignored when `options.stateDir` is set
-   * @param {{ stateDir?: string, mode?: number, exclude?: boolean }} [options]
+   * @param {{ stateDir?: string, mode?: number, exclude?: boolean, binding?: { kind: string, root: string } | null }} [options]
    */
   constructor(repoRoot, options = {}) {
+    this.repoRoot = repoRoot;
     this.root = options.stateDir || path.join(repoRoot, STATE_DIRNAME);
     this.dirMode = options.mode;
+    this.binding = options.binding || null;
     this.skipExclude = options.exclude === false;
     this.evidenceDir = path.join(this.root, "evidence");
     this.applyDir = path.join(this.root, "apply");
@@ -45,6 +47,7 @@ export class State {
     this.rejectionsPath = path.join(this.root, "rejections.json");
     this.gapLedgerPath = path.join(this.root, "gap-ledger.json");
     this.probeCachePath = path.join(this.root, "agent-probe-cache.json");
+    this.runContextPath = path.join(this.root, "run-context.json");
   }
 
   /**
@@ -53,7 +56,9 @@ export class State {
    * state is created 0700 and is never git-excluded (it does not live in a checkout).
    */
   ensure() {
+    if (this.binding) assertPrivatePath(this.root, { privateLeaf: true });
     fs.mkdirSync(this.root, { recursive: true, ...(this.dirMode ? { mode: this.dirMode } : {}) });
+    if (this.binding) assertPrivatePath(this.root, { privateLeaf: true });
     if (this.dirMode) {
       try {
         fs.chmodSync(this.root, this.dirMode);
@@ -69,16 +74,35 @@ export class State {
         );
       }
     }
-    fs.mkdirSync(this.evidenceDir, { recursive: true });
-    fs.mkdirSync(this.applyDir, { recursive: true });
-    this.exclude = this.skipExclude
-      ? { status: "skipped" }
-      : ensureLocalExclude(path.dirname(this.root), STATE_EXCLUDE_LINE);
+    fs.mkdirSync(this.evidenceDir, { recursive: true, mode: this.binding ? 0o700 : undefined });
+    fs.mkdirSync(this.applyDir, { recursive: true, mode: this.binding ? 0o700 : undefined });
+    if (this.binding) {
+      for (const dir of [this.evidenceDir, this.applyDir]) assertPrivatePath(dir, { privateLeaf: true });
+      const bindingFile = path.join(this.root, "scope.json");
+      if (pathEntryExists(bindingFile)) assertPrivateFile(bindingFile);
+      const existing = this.readJsonFile(bindingFile, null);
+      if (existing && (existing.kind !== this.binding.kind || existing.root !== this.binding.root)) {
+        throw new UserError("--state-dir belongs to a different scope or repository");
+      }
+      if (!existing && pathEntryExists(bindingFile)) throw new UserError("private state scope binding is invalid");
+      if (!existing) this.writeJsonFile(bindingFile, this.binding);
+    }
+    const relative = path.relative(this.repoRoot, this.root);
+    const insideRepo =
+      relative && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+    this.exclude =
+      this.skipExclude || (this.binding && !insideRepo)
+        ? { status: "skipped" }
+        : ensureLocalExclude(
+            this.repoRoot,
+            this.binding ? `${relative.split(path.sep).join("/")}/` : STATE_EXCLUDE_LINE,
+          );
     return this;
   }
 
   readJsonFile(file, fallback) {
-    if (!fs.existsSync(file)) return fallback;
+    if (!pathEntryExists(file)) return fallback;
+    if (this.binding) assertPrivateFile(file);
     try {
       return JSON.parse(fs.readFileSync(file, "utf8"));
     } catch (err) {
@@ -89,9 +113,19 @@ export class State {
 
   writeJsonFile(file, value) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    const tmp = `${file}.tmp`;
-    fs.writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`);
-    fs.renameSync(tmp, file);
+    if (this.binding && pathEntryExists(file)) assertPrivateFile(file);
+    const tmp = this.binding ? `${file}.${crypto.randomBytes(8).toString("hex")}.tmp` : `${file}.tmp`;
+    fs.writeFileSync(
+      tmp,
+      `${JSON.stringify(value, null, 2)}\n`,
+      this.binding ? { mode: 0o600, flag: "wx" } : undefined,
+    );
+    try {
+      fs.renameSync(tmp, file);
+    } catch (error) {
+      fs.rmSync(tmp, { force: true });
+      throw error;
+    }
   }
 
   readScanCache() {
@@ -205,6 +239,60 @@ export class State {
 
   writeProbeCache(cache) {
     this.writeJsonFile(this.probeCachePath, cache);
+  }
+
+  readRunContext() {
+    return this.readJsonFile(this.runContextPath, null);
+  }
+
+  writeRunContext(context) {
+    this.writeJsonFile(this.runContextPath, context);
+  }
+}
+
+/** Refuse link traversal on an explicit private state path, including existing parents. */
+function assertPrivatePath(target, { privateLeaf = false } = {}) {
+  const absolute = path.resolve(target);
+  let part = path.parse(absolute).root;
+  for (const segment of absolute.slice(part.length).split(path.sep).filter(Boolean)) {
+    part = path.join(part, segment);
+    let stat;
+    try {
+      stat = fs.lstatSync(part);
+    } catch (error) {
+      if (error.code === "ENOENT") continue;
+      throw new UserError(`cannot inspect private state path ${part}: ${error.message}`);
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new UserError(`unsafe private state path ${part}`);
+    if (part === absolute && typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+      throw new UserError(`private state directory is not owned by this user: ${part}`);
+    }
+    if (part === absolute && privateLeaf && stat.mode & 0o077) {
+      throw new UserError(`private state directory has unsafe permissions: ${part}`);
+    }
+  }
+}
+
+function assertPrivateFile(file) {
+  const stat = fs.lstatSync(file);
+  if (
+    !stat.isFile() ||
+    stat.isSymbolicLink() ||
+    stat.nlink !== 1 ||
+    (typeof process.getuid === "function" && stat.uid !== process.getuid()) ||
+    stat.mode & 0o077
+  ) {
+    throw new UserError(`unsafe private state file ${file}`);
+  }
+}
+
+function pathEntryExists(file) {
+  try {
+    fs.lstatSync(file);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
   }
 }
 

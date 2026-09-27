@@ -1,6 +1,41 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { AsyncLocalStorage } from "node:async_hooks";
+
+const childEnvironmentMode = new AsyncLocalStorage();
+const BASE_CHILD_KEYS = [
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "LANG",
+  "LC_ALL",
+  "TERM",
+  "SystemRoot",
+  "WINDIR",
+  "ComSpec",
+  "PATHEXT",
+];
+
+/** The CLI or embedding runner scopes this policy to one invocation. */
+export function withChildEnvironment(mode, callback, explicitEnv = {}) {
+  if (mode !== "native" && mode !== "restricted") throw new Error(`unknown child environment mode ${mode}`);
+  return childEnvironmentMode.run({ mode, explicitEnv: { ...explicitEnv } }, callback);
+}
+
+export function currentChildEnvironmentMode() {
+  return childEnvironmentMode.getStore()?.mode || "native";
+}
+
+export function buildChildEnvironment(overlay, { mode = "native", parent = process.env } = {}) {
+  if (mode === "native") return overlay ? { ...parent, ...overlay } : undefined;
+  if (mode !== "restricted") throw new Error(`unknown child environment mode ${mode}`);
+  const minimal = {};
+  for (const key of BASE_CHILD_KEYS) if (parent[key] !== undefined) minimal[key] = parent[key];
+  return { ...minimal, ...overlay };
+}
 
 /**
  * A spawn failure. `value` is set only on a Windows shim refusal
@@ -51,7 +86,10 @@ export function runCapture(
     const child = spawnFn(launch.file, launch.args, {
       cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env: env ? { ...process.env, ...env } : undefined,
+      env: buildChildEnvironment(
+        { ...childEnvironmentMode.getStore()?.explicitEnv, ...env },
+        { mode: currentChildEnvironmentMode() },
+      ),
       // The shim launch hands cmd.exe one already-quoted command line; Node must
       // not re-quote it.
       ...(launch.verbatim ? { windowsVerbatimArguments: true } : {}),

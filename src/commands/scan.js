@@ -9,7 +9,7 @@ import { closeSshMasters } from "../discovery/remote/ssh.js";
 export async function discoverForRun(ctx) {
   const { repo, scope, config, strict } = ctx;
   if (scope?.kind !== "user") attachSiblingClones(repo, config.discovery.cloneRoots);
-  const result = await discoverTranscripts({ repo, scope, config, strict });
+  const result = await discoverTranscripts({ repo, scope, config, strict, sessionSource: ctx.sessionSource });
   ctx.remoteMasters = [...(ctx.remoteMasters || []), ...(result.remoteMasters || [])];
   if (ctx.limit && result.transcripts.length > ctx.limit) {
     result.truncated = result.transcripts.length - ctx.limit;

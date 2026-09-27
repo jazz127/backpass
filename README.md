@@ -211,7 +211,7 @@ It cannot be combined with
 
 ### 1. Collect samples - which sessions belong to this repo
 
-backpass reads the local transcript stores of seven harnesses directly. No API, no upload.
+By default, backpass reads the local transcript stores of seven harnesses directly. No API, no upload.
 
 | Harness        | Store                                          | Repo tie                                            |
 | -------------- | ---------------------------------------------- | --------------------------------------------------- |
@@ -258,6 +258,17 @@ Association runs in four tiers:
 Configured SSH hosts are collected after the local stores and join the same corpus, with
 the same tiers, sample and cap - see [Your other machines](#your-other-machines).
 
+To select a normalized `external-session-source/v1` snapshot instead, pass
+`--session-source <snapshot-directory-or-manifest>` to `scan`, `analyze`, `propose`,
+`status`, or the default run. Selection is exclusive: no local harness stores or SSH
+hosts are scanned. `--session-source-mode exclusive` makes that choice explicit; other
+modes are unsupported. A malformed or unsafe selected snapshot fails the run by name.
+Snapshot files must be owned by the current user, private, regular files without hard
+links, and stored below private directories without symlinks. The source's recorded
+cwd, git root, and remotes go through the same association tiers. Its origin harness
+remains visible in the corpus mix, while its source identity stays stable when the
+snapshot directory moves.
+
 Collection is incremental. Codex alone can hold 10,000+ rollouts, so verdicts are cached in
 `.backpass/scan-cache.json` by path, mtime and size - re-scans cost only the new files.
 A harness whose store is missing or has drifted into an unrecognised shape produces a
@@ -286,8 +297,9 @@ deterministically: user and assistant turns verbatim, each tool call collapsed t
 (`tool: Bash "npm test" -> 1 failing`), tool output truncated, injected harness scaffolding
 dropped, secrets redacted. Typical reduction is **96-99%**.
 
-The distilled trace ends with the path to the raw transcript, so the analysis agent can
-open the original when - and only when - a specific claim needs it.
+For native transcripts, the distilled trace ends with the path to the raw transcript,
+so the analysis agent can open the original when - and only when - a specific claim
+needs it. A selected session source supplies no raw transcript path.
 
 ### 3. Calculate loss - one cheap call per transcript
 

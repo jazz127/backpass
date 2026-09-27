@@ -269,7 +269,7 @@ export async function main(argv) {
         `unsupported --session-source-mode "${values["session-source-mode"]}" (only exclusive is supported)`,
       );
     }
-    if (values["session-source"] && !["run", "scan", "analyze", "propose", "status"].includes(commandName)) {
+    if (values["session-source"] && !["run", "scan", "analyze", "propose", "status", "apply"].includes(commandName)) {
       throw new UserError(`--session-source does not apply to ${commandName}`);
     }
     const sessionSource = values["session-source"] ? discoverFileSource(values["session-source"]) : null;
@@ -284,6 +284,8 @@ export async function main(argv) {
       config = loadConfig(repo.root, overrides);
     }
     config.discovery.hosts = applyHostFlag(config.discovery.hosts, values.host);
+    config.sourceFingerprint = sessionSource ? `${sessionSource.sourceId}:${sessionSource.snapshotDigest}` : "native";
+    config.enforceEvidenceRoute = true;
     const scope = resolveScope(process.cwd(), { ...values, scope: kind, strict: Boolean(values.strict) }, config, repo);
     printScopeNote(scope);
     if (values.target !== undefined && !TARGET_COMMANDS.has(commandName)) {
@@ -321,6 +323,7 @@ export async function main(argv) {
       version: VERSION,
       strict: Boolean(values.strict),
       sessionSource,
+      sessionSourcePath: values["session-source"] || null,
       limit: values.limit ? toInt(values.limit, "--limit") : null,
     };
 

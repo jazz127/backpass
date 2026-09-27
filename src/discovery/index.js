@@ -237,6 +237,8 @@ function discoverExternalTranscripts({ repo, scope = null, config, strict = fals
     const transcript = {
       sourceKind: "external",
       sourceId: snapshot.sourceId,
+      snapshotDigest: snapshot.snapshotDigest,
+      policyDigest: snapshot.policyDigest,
       sessionId: descriptor.sessionId,
       revision: descriptor.revision,
       harness,

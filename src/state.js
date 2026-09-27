@@ -6,6 +6,7 @@ import { STATE_DIRNAME } from "./config.js";
 import { UserError, warn } from "./logger.js";
 import { ensureLocalExclude } from "./repo.js";
 import { transcriptIdentity } from "./transcript.js";
+import { DISTILLER_VERSION } from "./distill.js";
 
 /** The line every command writes to the repo's local git exclude for the state dir. */
 export const STATE_EXCLUDE_LINE = `${STATE_DIRNAME}/`;
@@ -225,15 +226,32 @@ function migrateEvidenceRecord(record, transcript, identity) {
   };
 }
 
-export const ANALYSIS_INDEX_VERSION = 3;
+export const ANALYSIS_INDEX_VERSION = 5;
 
 /**
- * Cache key for a transcript's analysis: its content signature, the memory-surface hash,
- * and the analysis index version. Changing any of them invalidates the evidence.
+ * Cache key for a transcript's analysis. Source revision, evidence policy, distiller,
+ * memory surface, route and credential seat all invalidate a previous judgment.
  */
-export function evidenceKey(transcript, memoryHash) {
+export function evidenceKey(transcript, memoryHash, route = null) {
   const content = transcript.contentSignature || `${transcript.mtimeMs}:${transcript.bytes}`;
-  return `${transcriptIdentity(transcript)}:${content}:${memoryHash}:analysis-index-v${ANALYSIS_INDEX_VERSION}`;
+  return sha256(
+    JSON.stringify({
+      version: ANALYSIS_INDEX_VERSION,
+      identity: transcriptIdentity(transcript),
+      content,
+      sourceKind: transcript.sourceKind || "native",
+      sourceId: transcript.sourceId || null,
+      snapshotDigest: transcript.snapshotDigest || null,
+      revision: transcript.revision || null,
+      policyDigest: transcript.policyDigest || null,
+      policyVersion: transcript.screening?.policyVersion || null,
+      parserVersion: transcript.screening?.parserVersion || null,
+      evidenceMode: transcript.sourceKind === "external" ? "trace-only" : "native",
+      distillerVersion: DISTILLER_VERSION,
+      memoryHash,
+      route,
+    }),
+  );
 }
 
 /**
@@ -241,9 +259,9 @@ export function evidenceKey(transcript, memoryHash) {
  * `skipped` entry is re-derived because the skip decision depends on configuration
  * (`minUserTurns`) rather than on the model - recomputing it costs one local file read.
  */
-export function isEvidenceFresh(evidence, transcript, memoryHash) {
+export function isEvidenceFresh(evidence, transcript, memoryHash, route = null) {
   if (!evidence || evidence.status !== "ok") return false;
-  return evidence.key === evidenceKey(transcript, memoryHash);
+  return evidence.key === evidenceKey(transcript, memoryHash, route ?? evidence.route ?? null);
 }
 
 /**
@@ -274,13 +292,14 @@ export function isSuppressedByRejection(edit, rejections) {
   return (edit.transcripts || 0) <= (prior.transcripts || 0);
 }
 
-export function recordRejection(edit, rejections, at = new Date().toISOString()) {
+export function recordRejection(edit, rejections, at = new Date().toISOString(), provenance = null) {
   rejections.entries[rejectionKey(edit)] = {
     kind: edit.kind,
     file: edit.file,
     title: edit.title,
     transcripts: edit.transcripts || 0,
     rejectedAt: at,
+    ...(provenance ? { provenance } : {}),
   };
   return rejections;
 }

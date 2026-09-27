@@ -47,6 +47,9 @@ import { sha256 } from "./state.js";
  *    first saw it (re-analysis never refreshes that clock; session age itself is already
  *    bounded by discovery's `since` at entry). Keying to the memory hash instead would
  *    reset the count on every unrelated edit, which is the failure this ledger fixes.
+ *    Prompts, consolidation, and fold read a filtered copy (`filterGapLedger`) that drops
+ *    other sources' sightings, stale trace-only revisions or evidence keys, and native
+ *    sightings of a selected session whose content changed; the persisted ledger keeps them.
  *  - The file is fail-soft: a missing or corrupt ledger is rebuilt from this run's
  *    evidence, which is exactly what the pre-ledger fold saw.
  */
@@ -76,6 +79,7 @@ export function gapSource(transcript = {}) {
 }
 
 export function sessionSourceId(transcript = {}) {
+  if (transcript.sourceKind === "external") return `${transcript.sourceId}/${transcript.sessionId}`;
   const native = String(transcript.nativeId ?? "").trim();
   if (native) return native;
   const raw = String(transcript.id || "").trim();
@@ -208,7 +212,13 @@ export function recordGapObservations(ledger, evidenceRecords, options = {}) {
       }
       const identityPrior = entry.sessions[sessionIdentity];
       const aliasPrior = transcript.id && transcript.id !== sessionIdentity ? entry.sessions[transcript.id] : null;
-      const priors = [identityPrior, aliasPrior].filter(Boolean);
+      const sameTrace = (observation) =>
+        (transcript.sourceKind !== "external" && observation.sourceKind !== "external") ||
+        (observation.sourceKind === (transcript.sourceKind || "native") &&
+          observation.sourceId === (transcript.sourceId || null) &&
+          observation.revision === (transcript.revision || null) &&
+          observation.evidenceKey === (record.key || null));
+      const priors = [identityPrior, aliasPrior].filter((observation) => observation && sameTrace(observation));
       const firstObservedAt = priors
         .map((observation) => observation.firstObservedAt || observation.observedAt)
         .filter((value) => Number.isFinite(Date.parse(value)))
@@ -228,8 +238,16 @@ export function recordGapObservations(ledger, evidenceRecords, options = {}) {
         firstObservedAt: firstObservedAt || observedAt,
         observedAt,
         sessionStartedAt:
-          transcript.startedAt ?? identityPrior?.sessionStartedAt ?? aliasPrior?.sessionStartedAt ?? null,
+          transcript.startedAt ??
+          priors.find((observation) => observation.sessionStartedAt != null)?.sessionStartedAt ??
+          null,
         memoryHash: record.memoryHash || null,
+        evidenceKey: record.key || null,
+        sourceKind: transcript.sourceKind || "native",
+        sourceId: transcript.sourceId || null,
+        revision: transcript.revision || null,
+        contentSignature: transcript.contentSignature || null,
+        contentDigest: transcript.contentSignature || `${transcript.mtimeMs}:${transcript.bytes}`,
         source: gapSource(transcript),
         mistake: gap.mistake,
         quote: gap.quote,
@@ -247,6 +265,61 @@ export function recordGapObservations(ledger, evidenceRecords, options = {}) {
     }
   }
   return recorded;
+}
+
+/**
+ * Narrow a ledger copy to the sightings this run may show a model or fold: selected trace
+ * observations only at their exact approved revision. Mutates its argument; never pass the
+ * ledger that gets persisted.
+ */
+export function filterGapLedger(ledger, evidenceRecords, selectedTranscripts = [], options = {}) {
+  const current = new Map(
+    evidenceRecords.map((record) => [record.transcript?.identity || record.transcript?.id, record]),
+  );
+  const sourceKind =
+    options.sourceKind ||
+    (selectedTranscripts.some((transcript) => transcript.sourceKind === "external") ? "external" : "native");
+  const selected = new Map();
+  for (const transcript of selectedTranscripts) {
+    selected.set(transcript.identity || transcript.id, transcript);
+    if (transcript.sourceKind !== "external" && transcript.id) selected.set(transcript.id, transcript);
+  }
+  for (const [id, entry] of Object.entries(ledger.entries)) {
+    for (const [sessionId, observation] of Object.entries(entry.sessions)) {
+      const record = current.get(sessionId);
+      const transcript = selected.get(sessionId);
+      const traceOnly = transcript?.sourceKind === "external";
+      const valid =
+        !transcript && sourceKind === "native" && observation.sourceKind !== "external"
+          ? true
+          : traceOnly
+            ? record?.status === "ok" &&
+              record.memoryPath === entry.memoryPath &&
+              observation.sourceKind === "external" &&
+              observation.sourceId === transcript.sourceId &&
+              observation.revision === transcript.revision &&
+              observation.evidenceKey === record.key
+            : transcript &&
+              observation.sourceKind !== "external" &&
+              (!observation.contentDigest ||
+                observation.contentDigest ===
+                  (transcript.contentSignature || `${transcript.mtimeMs}:${transcript.bytes}`));
+      if (!valid) delete entry.sessions[sessionId];
+    }
+    if (!Object.keys(entry.sessions).length) {
+      delete ledger.entries[id];
+      continue;
+    }
+    const phrasings = [...new Set(Object.values(entry.sessions).flatMap((obs) => obs.phrasings || []))];
+    if (phrasings.length) {
+      entry.phrasings = phrasings;
+      entry.proposedInstruction = phrasings.reduce(
+        (shortest, phrase) => (phrase.length < shortest.length ? phrase : shortest),
+        phrasings[0],
+      );
+    }
+  }
+  return ledger;
 }
 
 /**

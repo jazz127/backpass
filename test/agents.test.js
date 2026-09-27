@@ -344,6 +344,7 @@ test("non-claude candidates resolve the bare id against the advertised list", as
 
 test("a bare ladder model re-probes when its resolved provider's key changes", async () => {
   const keys = { openai: "oai-a", anthropic: "ant-a" };
+  /** @param {string} agent @param {{ model?: string }} [opts] */
   const providerAuthState = (agent, { model } = {}) => `${agent}:${keys[String(model).split("/")[0]] || "none"}`;
   const config = { ...loadConfig(tmpRepo()), enforceEvidenceRoute: true };
   const verdicts = { "pi|gpt-5.6-luna": { resolvedModel: "openai/gpt-5.6-luna" } };

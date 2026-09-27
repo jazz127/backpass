@@ -263,8 +263,8 @@ To select a normalized `external-session-source/v1` snapshot instead, pass
 `status`, or the default run. Selection is exclusive: no local harness stores or SSH
 hosts are scanned. `--session-source-mode exclusive` makes that choice explicit; other
 modes are unsupported. A malformed or unsafe selected snapshot fails the run by name.
-Snapshot files must be owned by the current user, private, regular files without hard
-links, and stored below private directories without symlinks. The source's recorded
+The selected path is resolved once; everything inside the snapshot must be owned by the
+current user and private, with regular files without hard links and no symlinks. The source's recorded
 cwd, git root, and remotes go through the same association tiers. Its origin harness
 remains visible in the corpus mix, while its source identity stays stable when the
 snapshot directory moves.

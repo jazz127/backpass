@@ -537,10 +537,6 @@ function observationDomain(obs) {
   return obs?.domain === "orchestration" ? "orchestration" : "project";
 }
 
-/**
- * Cluster domain is a majority of per-sighting votes, not a pre-filter. Ties (including
- * 1 of 2) stay project so one inconsistent analysis call cannot kill a real recurrence.
- */
 function representativeGapItems(items, route) {
   const selected = items.slice(0, 6);
   if (!route || items.length <= 6) return selected;
@@ -553,6 +549,10 @@ function representativeGapItems(items, route) {
   return selected;
 }
 
+/**
+ * Cluster domain is a majority of per-sighting votes, not a pre-filter. Ties (including
+ * 1 of 2) stay project so one inconsistent analysis call cannot kill a real recurrence.
+ */
 function clusterDomainVote(items) {
   const orchestrationSightings = items.filter((item) => item.domain === "orchestration").length;
   const sightings = items.length;

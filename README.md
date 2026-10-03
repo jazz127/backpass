@@ -105,7 +105,8 @@ Use `--state-dir <dir>` with `scan`, `analyze`, `propose`, `status`, and `apply`
 keep a run in a dedicated private state directory. Run `scan` first, then pass the
 same directory and scope to each later command. The scan pins the source snapshot,
 selected corpus, and an inventory of the exact memory and skill file bytes and
-resolved pointer targets. `analyze` and `propose` refuse changed inputs; `apply`
+resolved pointer targets, including named nested memory files and their pointer
+siblings. `analyze` and `propose` refuse changed inputs; `apply`
 checks the saved inventory again. A new `scan` starts a new run in that directory.
 The directory is owner-only (0700), and Backpass refuses links in the path (other than
 root-owned system links above your own directories, such as macOS `/tmp`), permissive
@@ -718,8 +719,9 @@ weight of its own; a missing file is reported, never created:
   only the root file. The nested pass sees the root file and any named ancestor nested
   files (outermost first) as already loaded, and keeps its own evidence, gap ledger, and
   staging copy under `.backpass/nested/`. A change to any of those loaded files re-judges
-  the nested evidence. A session collected over ssh, or one with no in-repo work path,
-  is placed nowhere and feeds only the root file.
+  the nested evidence. A remote session (collected over SSH or marked with a host alias
+  in an external snapshot), or one with no in-repo work path, is placed nowhere and
+  feeds only the root file.
 - **Routing.** A new instruction belongs to the most specific named file whose directory
   every session behind it worked in: a lesson from two `apps/api` sessions goes to
   `apps/api/AGENTS.md`, and one seen in both `apps/api` and `apps/web` goes to the root.

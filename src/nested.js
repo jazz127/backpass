@@ -301,7 +301,7 @@ export function workedPaths(transcript, events, roots) {
 
 /**
  * Where each transcript worked, keyed by transcript identity: sorted repo-relative paths,
- * or null for a session that cannot be placed (collected over ssh, or unreadable).
+ * or null for a session that cannot be placed (remote, or unreadable).
  * Cached by content signature in `.backpass/nested/attribution.json`, so a run reads a
  * transcript for this only once.
  *

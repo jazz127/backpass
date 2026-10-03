@@ -7,11 +7,13 @@ import { UserError, fail, setQuiet } from "./logger.js";
 import { applyHostFlag, loadConfig, parseMaxTranscripts, parseScopeKind } from "./config.js";
 import { resolveRepo } from "./repo.js";
 import { printScopeNote, resolveScope } from "./scope.js";
+import { applyNestedMemoryConfig } from "./nested.js";
 import { printTargetNote, resolveTarget, TARGET_COMMANDS } from "./target.js";
 import { State } from "./state.js";
 import { AgentResolver } from "./agents.js";
 import { discover as discoverFileSource } from "./sources/file.js";
 import { withChildEnvironment } from "./subprocess.js";
+import { AcpxError } from "./acpx.js";
 
 import { cmdInit } from "./commands/init.js";
 import { cmdScan } from "./commands/scan.js";
@@ -68,6 +70,7 @@ const OPTIONS = {
 
   "dry-run": { type: "boolean" },
   "no-ui": { type: "boolean" },
+  decisions: { type: "string", multiple: true },
   "no-open": { type: "boolean" },
   "no-auto-agent": { type: "boolean" },
   force: { type: "boolean" },
@@ -144,6 +147,10 @@ BUDGET AND SHAPE
 
 APPLY
   --no-ui                  terminal accept/reject instead of the Lavish surface
+  --decisions <vector>     decide without a review surface, e.g. for a script you
+                           trust: "e1=accepted e2=rejected:too-narrow"; an edit
+                           it does not name is left undecided. Repeatable; all vectors
+                           are checked together, and no edit may be decided twice
   --no-open                print the review surface URL without opening a browser
   --dry-run                show what would be written, write nothing
   --force                  re-analyze transcripts that already have fresh evidence,
@@ -203,7 +210,11 @@ export function overridesFrom(values) {
     overrides.discovery = overrides.discovery || {};
     overrides.discovery.includeProjects = values.project;
   }
-  if (values["memory-file"]?.length) overrides.memoryFiles = values["memory-file"];
+  // A run that names its memory files trains exactly those, never a nested one too.
+  if (values["memory-file"]?.length) {
+    overrides.memoryFiles = values["memory-file"];
+    overrides.nestedMemoryFiles = [];
+  }
   if (values["skills-dir"]) overrides.skillsDir = values["skills-dir"];
   if (values.theme) overrides.theme = values.theme;
 
@@ -306,7 +317,7 @@ export async function main(argv) {
       config = loadConfig(null, overrides, { kind: "user" });
     } else {
       repo = resolveRepo(process.cwd());
-      config = loadConfig(repo.root, overrides);
+      config = applyNestedMemoryConfig(repo.root, loadConfig(repo.root, overrides));
     }
     config.discovery.hosts = applyHostFlag(config.discovery.hosts, values.host);
     config.timeoutOverride = values.timeout !== undefined;
@@ -314,6 +325,9 @@ export async function main(argv) {
     config.enforceEvidenceRoute = true;
     const scope = resolveScope(process.cwd(), { ...values, scope: kind, strict: Boolean(values.strict) }, config, repo);
     printScopeNote(scope);
+    if (values.decisions !== undefined && commandName !== "apply") {
+      throw new UserError(`--decisions does not apply to ${commandName}`, "it decides the edits of `backpass apply`");
+    }
     if (values.target !== undefined && !TARGET_COMMANDS.has(commandName)) {
       throw new UserError(
         `--target does not apply to ${commandName}`,
@@ -326,6 +340,9 @@ export async function main(argv) {
     // Resolved after the scope so user-scope entries and skill dirs are the ones matched.
     config.target = resolveTarget(values.target, scope);
     printTargetNote(config.target);
+    // Nested memory files are trained by a run over the whole surface; a targeted run
+    // trains its one file and never widens to them.
+    if (config.target.kind !== "surface") config.nestedMemoryFiles = [];
     config.memoryFiles = config.target.kind === "memory" ? [config.target.path] : scope.memoryFiles;
     config.skillsDir = scope.overflowDir;
     if (scope.skillDirs.length) config.skillsDirs = scope.skillDirs;
@@ -357,12 +374,26 @@ export async function main(argv) {
 
     return (await withChildEnvironment(values["child-env"] || "native", () => command(ctx))) ?? 0;
   } catch (err) {
-    if (err instanceof UserError) {
-      fail(err.message);
-      if (err.hint) console.error(`  ${err.hint}`);
-      return 1;
-    }
-    fail(err.stack || err.message);
+    return reportError(err);
+  }
+}
+
+/** Print a failure that escaped a command and return the exit code. */
+export function reportError(err) {
+  if (err instanceof UserError) {
+    fail(err.message);
+    if (err.hint) console.error(`  ${err.hint}`);
     return 1;
   }
+  if (err instanceof AcpxError && err.timedOut) {
+    fail(err.message);
+    console.error(
+      err.stage === "verify"
+        ? "  acpx was too slow to start (adapter-configuration check timed out twice); rerun when the host is less loaded - finished analysis is cached"
+        : "  the harness call timed out; rerun to retry - finished analysis is cached - or raise timeoutSeconds in the backpass config",
+    );
+    return 1;
+  }
+  fail(err.stack || err.message);
+  return 1;
 }

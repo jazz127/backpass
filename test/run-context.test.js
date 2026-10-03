@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 
 import { checkProposalRunContext, checkRunContext, inputInventory } from "../src/run-context.js";
 import { State } from "../src/state.js";
@@ -77,6 +78,73 @@ test("snapshot, selected corpus, memory, and skill bytes remain pinned", () => {
   fs.appendFileSync(path.join(repoRoot, ".agents/skills/database/SKILL.md"), "More schema.\n");
   assert.throws(() => checkRunContext(ctx, corpus), /inputMemoryDigest/);
 });
+
+test("named nested memory bytes remain pinned through propose and apply", () => {
+  const { ctx, repoRoot } = fixture("nested-pin", { restricted: true });
+  const nestedPath = "apps/api/AGENTS.md";
+  ctx.config.nestedMemoryFiles = [nestedPath];
+  fs.mkdirSync(path.join(repoRoot, "apps/api"), { recursive: true });
+  fs.writeFileSync(path.join(repoRoot, nestedPath), "# API rules\n\n- Check contracts.\n");
+  const pinned = checkRunContext(ctx, corpus, { start: true });
+  const proposal = { provenance: { source: { kind: "native" }, runContext: pinned } };
+  checkProposalRunContext(ctx, proposal);
+  fs.appendFileSync(path.join(repoRoot, nestedPath), "- Check timeouts.\n");
+  assert.throws(() => checkRunContext(ctx, corpus), /inputMemoryDigest/);
+  assert.throws(() => checkProposalRunContext(ctx, proposal), /proposal is stale/);
+});
+
+function nestedPointerFixture(name, restricted) {
+  const workspace = fixture(name, { restricted });
+  workspace.ctx.config.nestedMemoryFiles = ["apps/api/AGENTS.md"];
+  const dir = path.join(workspace.repoRoot, "apps/api");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "AGENTS.md"), "# API rules\n\n- Check contracts.\n");
+  const pointer = path.join(dir, "CLAUDE.md");
+  fs.writeFileSync(pointer, "@AGENTS.md\n");
+  return { ...workspace, pointer };
+}
+
+test("nested pointer inventory records exact bytes and resolved targets", () => {
+  const { ctx, pointer, repoRoot } = nestedPointerFixture("nested-pointer-inventory", true);
+  const bytes = Buffer.from("<!-- API memory -->\r\n\r\n@./AGENTS.md\r\n");
+  fs.writeFileSync(pointer, bytes);
+  const inventory = inputInventory(ctx);
+  const entry = inventory.entries.find((item) => item.path === "apps/api/CLAUDE.md");
+  assert.ok(entry);
+  assert.equal(entry.target, fs.realpathSync(pointer));
+  assert.equal(entry.pointerTarget, path.join(repoRoot, "apps/api/AGENTS.md"));
+  assert.equal(entry.bytes, bytes.length);
+  assert.equal(entry.digest, `sha256:${createHash("sha256").update(bytes).digest("hex")}`);
+});
+
+for (const restricted of [false, true]) {
+  for (const mutation of ["delete", "retarget", "bytes", "symlink"]) {
+    test(`frozen nested pointers refuse ${mutation} in ${restricted ? "restricted" : "native"} mode`, () => {
+      const { ctx, pointer, repoRoot } = nestedPointerFixture(`nested-pointer-${restricted}-${mutation}`, restricted);
+      if (mutation === "symlink") {
+        for (const name of ["first-pointer.md", "second-pointer.md"]) {
+          fs.writeFileSync(path.join(repoRoot, "apps/api", name), "@AGENTS.md\n");
+        }
+        fs.rmSync(pointer);
+        fs.symlinkSync("first-pointer.md", pointer);
+      }
+      const pinned = checkRunContext(ctx, corpus, { start: true });
+      const proposal = { provenance: { source: { kind: "native" }, runContext: pinned } };
+      assert.doesNotThrow(() => checkRunContext(ctx, corpus));
+      assert.doesNotThrow(() => checkProposalRunContext(ctx, proposal));
+      if (mutation === "delete") fs.rmSync(pointer);
+      else if (mutation === "retarget") fs.writeFileSync(pointer, "@../../AGENTS.md\n");
+      else if (mutation === "bytes") fs.writeFileSync(pointer, "<!-- still imports API memory -->\n@AGENTS.md\n");
+      else {
+        fs.rmSync(pointer);
+        fs.symlinkSync("second-pointer.md", pointer);
+      }
+      assert.notEqual(inputInventory(ctx).digest, pinned.inputMemoryDigest);
+      assert.throws(() => checkRunContext(ctx, corpus), /inputMemoryDigest/);
+      assert.throws(() => checkProposalRunContext(ctx, proposal), /proposal is stale/);
+    });
+  }
+}
 
 test("inventory records exact bytes and pointer target; restricted mode refuses an unapproved pointer", () => {
   const { ctx, repoRoot } = fixture("pointer", { restricted: true });

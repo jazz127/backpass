@@ -45,8 +45,8 @@ export function getAdapter(harness) {
  * Re-scans are then O(new files) - which matters: codex alone had 10,317 rollouts on
  * the machine this was designed against.
  *
- * SQLite-backed stores (opencode, hermes, cursor IDE) answer the same question with one
- * indexed query, so they skip the cache entirely.
+ * SQLite-backed stores (opencode, hermes, cursor IDE) query session metadata directly,
+ * so they skip the file-header cache entirely.
  *
  * Every harness is fail-soft: a store that is missing, unreadable, or has drifted into
  * an unrecognised format produces a named warning and is skipped, never a failed run.
@@ -392,9 +392,8 @@ async function discoverDirect(
   adapter,
   { repo, config, cutoffMs, strict, stats, associateFn, stateDir, userFilter, enumerateNative },
 ) {
-  const rows = await (enumerateNative
-    ? enumerateNative(adapter, { cutoffMs, repo, config })
-    : adapter.discover({ cutoffMs, repo, config }));
+  const options = { cutoffMs, repo, config, warn: (message) => warn(`${adapter.name}: ${message}`) };
+  const rows = await (enumerateNative ? enumerateNative(adapter, options) : adapter.discover(options));
   const out = [];
   for (const row of rows) {
     stats.scanned += 1;
@@ -408,7 +407,9 @@ async function discoverDirect(
       stats.skipped += 1;
       continue;
     }
-    if (isSelfSession(transcript, { stateDir })) {
+    // A SQLite store has no per-session file to inspect; its adapter marks backpass's own
+    // sessions from the store itself (see ./self.js).
+    if (row.self || isSelfSession(transcript, { stateDir, readHead: !adapter.sqliteBacked })) {
       stats.self += 1;
       continue;
     }
@@ -528,7 +529,8 @@ function toTranscript(adapter, row, association, id, { host = null, remote = nul
  * `rawPath` names a real local file - which is what keeps the analysis prompt's
  * raw-transcript escape hatch working for a session that ran on another machine. A
  * SQLite store has no per-session file to copy, so the probe ran `read()` over there and
- * the cache holds its events, exactly the situation a local SQLite session is already in.
+ * the cache holds its events. Local SQLite sessions still return the store as `rawPath`;
+ * `src/analyze.js` owns the session-specific export used by the analysis prompt.
  */
 export async function readTranscript(transcript) {
   const kind = transcript.sourceKind || "native";

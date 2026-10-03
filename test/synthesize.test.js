@@ -72,7 +72,7 @@ fs.writeFileSync(statePath, JSON.stringify(state));
 fs.chmodSync(fakeAcpx, 0o755);
 process.env.BACKPASS_ACPX_BIN = fakeAcpx;
 
-const { synthesizeProposal, ANNOTATE_TURNS } = await import("../src/synthesize.js");
+const { synthesizeProposal, ANNOTATE_TURNS, renderRejections } = await import("../src/synthesize.js");
 const { applyDecisions } = await import("../src/apply/writer.js");
 const { loadConfig } = await import("../src/config.js");
 const { parseMemoryUnits, readMemoryFile } = await import("../src/memory.js");
@@ -185,14 +185,15 @@ function setup(
     : "AGENTS.md";
   if (externalMemory) fs.writeFileSync(memoryPath, text);
   const memoryFile = readMemoryFile(repo.root, memoryPath, { allowExternal: externalMemory });
-  const run = () =>
+  const run = ({ memoryFile: selectedFile = memoryFile, config: selectedConfig = config, routing = null } = {}) =>
     synthesizeProposal({
-      memoryFile,
+      memoryFile: selectedFile,
       summary,
-      config,
+      config: selectedConfig,
       repo,
       transcripts: [{ harness: "claude" }],
       scope,
+      routing,
     });
   const calls = () =>
     fs
@@ -203,6 +204,46 @@ function setup(
       .map((l) => JSON.parse(l));
   return { repo, config, memoryFile, externalSkillsDir, run, calls };
 }
+
+test("root and nested synthesis both refuse direct writes to the other memory file", async () => {
+  for (const pass of ["root", "nested"]) {
+    const { repo, config, run } = setup(
+      { edit: {}, annotations: [{ reply: { edits: [] } }] },
+      { overrides: { nestedMemoryFiles: ["apps/api/AGENTS.md"] } },
+    );
+    const nestedPath = "apps/api/AGENTS.md";
+    const nestedText = "# API memory\n";
+    const absoluteNested = path.join(repo.root, nestedPath);
+    fs.mkdirSync(path.dirname(absoluteNested), { recursive: true });
+    fs.writeFileSync(absoluteNested, nestedText);
+    const target = pass === "root" ? absoluteNested : path.join(repo.root, "AGENTS.md");
+    fs.writeFileSync(
+      path.join(repo.root, "fake-script.json"),
+      JSON.stringify({ edit: { [target]: "# Direct write\n" }, annotations: [{ reply: { edits: [] } }] }),
+    );
+    const nestedConfig = {
+      ...config,
+      memoryFiles: [nestedPath],
+      target: { kind: "memory", path: nestedPath, nested: true },
+    };
+    await assert.rejects(
+      () =>
+        pass === "root"
+          ? run()
+          : run({
+              memoryFile: readMemoryFile(repo.root, nestedPath),
+              config: nestedConfig,
+              routing: { rootPath: "AGENTS.md" },
+            }),
+      (err) =>
+        err instanceof UserError &&
+        err.message.includes(
+          `synthesis changed ${pass === "root" ? nestedPath : "AGENTS.md"} in the repository directly`,
+        ),
+    );
+    assert.equal(fs.readFileSync(target, "utf8"), "# Direct write\n");
+  }
+});
 
 test("synthesis edits the staging copy natively; measured hunks anchor to the raw file and nothing touches the repo until apply", async () => {
   const { repo, config, run, calls } = setup({
@@ -825,4 +866,25 @@ test("a skill backpass withheld from staging is not fingerprinted, so a third pa
 
   const { violations } = await withheld.run();
   assert.deepEqual(violations, []);
+});
+
+test("the synthesis prompt lists stored rejection identities and reasons", () => {
+  const text = renderRejections({
+    version: 1,
+    entries: {
+      abc: {
+        kind: "add",
+        file: "AGENTS.md",
+        title: "pin node",
+        transcripts: 2,
+        rejectedAt: "2026-09-27T00:00:00.000Z",
+        gapIds: ["cafef00ddeadbeef"],
+        reason: "already-covered",
+      },
+    },
+  });
+  assert.match(text, /\[add\] pin node/);
+  assert.match(text, /cafef00ddeadbeef/);
+  assert.match(text, /already-covered/);
+  assert.doesNotMatch(text, /\(none\)/);
 });

@@ -391,6 +391,11 @@
         margin-right: 6px;
         vertical-align: middle;
       }
+      .gauge-nested .gauge-head {
+        margin-top: 18px;
+        padding-top: 14px;
+        border-top: 1px dashed var(--line-soft);
+      }
 
       /* ---------- section titles ---------- */
       .sect {
@@ -641,6 +646,34 @@
         color: var(--reject);
         background: var(--reject-dim);
       }
+      .reject-reasons {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 8px;
+      }
+      .reject-reasons[hidden] {
+        display: none !important;
+      }
+      .reason-chip {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        letter-spacing: 0.06em;
+        padding: 4px 9px;
+        background: transparent;
+        border: 1px solid var(--line);
+        color: var(--faint);
+        cursor: pointer;
+      }
+      .reason-chip:hover {
+        border-color: var(--dim);
+        color: var(--text);
+      }
+      .reason-chip.on {
+        border-color: var(--reject);
+        color: var(--reject);
+        background: var(--reject-dim);
+      }
 
       .skillprev {
         border: 1px solid var(--line-soft);
@@ -794,7 +827,7 @@
         <div class="ctx-funnel">
           <div class="funnel-head">
             <span class="t"
-              >Funnel · this run
+              >Funnel · this run<span id="funnel-scope"></span>
               <span class="legend"
                 ><i class="lane-a"></i>existing instruction<i class="lane-b"></i>missing instruction</span
               ></span
@@ -821,6 +854,7 @@
           <span><i style="background: var(--accent)"></i>projected after apply</span>
           <span><i style="background: var(--reject); height: 9px; width: 2px"></i><span id="cap-label"></span></span>
         </div>
+        <div class="gauge-nested" id="gauge-nested"></div>
       </div>
 
       <div class="sect">
@@ -856,6 +890,8 @@
         var edits = P.edits || [];
         var budget = P.budget || { current: 0, capTokens: 0 };
         var decisions = {};
+        var rejectReasons = {};
+        var REJECT_REASONS = ["wrong-evidence", "already-covered", "too-narrow", "too-broad", "disagree"];
         edits.forEach(function (e) {
           decisions[e.id] = "accepted";
         });
@@ -923,7 +959,11 @@
           // gate. The three parts are the only outcomes a cluster can have.
           var distinctGaps = eligible + reportOnly + singletons;
           var candidates = s.instructionsWithNegatives;
-          var adds = edits.filter(function (e) {
+          // The funnel is the root file's run; a nested file's edits are counted on its gauge.
+          var rootEdits = edits.filter(function (e) {
+            return !e.nestedMemoryFile;
+          });
+          var adds = rootEdits.filter(function (e) {
             return (
               e.hunks.length > 0 &&
               e.hunks.every(function (hunk) {
@@ -934,7 +974,7 @@
           return {
             floor: Number((P.config || {}).minGapEvidence) || 2,
             projectFloor: Number((P.config || {}).minGapProjects) || 1,
-            cap: Number((P.config || {}).maxEditsPerRun) || edits.length,
+            cap: Number((P.config || {}).maxEditsPerRun) || rootEdits.length,
             findings: [(s.positive || 0) + (s.negative || 0), s.gapSightings],
             followed: s.positive || 0,
             // A finding is not a candidate: several negatives can name one instruction,
@@ -949,7 +989,7 @@
             leftAlone: s.instructionsLeftAlone || 0,
             leftAloneMaxSessions: s.leftAloneMaxSessions,
             suppressed: s.instructionsSuppressed || 0,
-            proposed: [edits.length - adds, adds],
+            proposed: [rootEdits.length - adds, adds],
             sighted: s.gapSightings,
             eligible: eligible,
             dropped: singletons,
@@ -1008,6 +1048,9 @@
           host.appendChild(line);
         }
         var funnelNote = null;
+        if ((P.nested || []).length) {
+          document.getElementById("funnel-scope").textContent = " · " + (P.memoryFile.path || "");
+        }
         var funnel = funnelCounts();
         if (funnel) {
           var bars = document.getElementById("funnel-bars");
@@ -1123,10 +1166,41 @@
         document.getElementById("cap-label").textContent = fmt(budget.capTokens) + " tok cap";
         document.getElementById("gauge-now").style.width = pct(budget.current, budget.capTokens) + "%";
 
+        // A nested memory file has a budget of its own: one gauge per file that has edits.
+        var nestedGauges = (P.nested || [])
+          .filter(function (n) {
+            return (n.edits || []).length > 0;
+          })
+          .map(function (n) {
+            var head = el("div", "gauge-head");
+            head.appendChild(el("span", "t", "Nested budget · " + n.memoryFile.path + " · loads under " + n.dir + "/"));
+            var readout = el("span", "readout num");
+            head.appendChild(readout);
+            var gauge = el("div", "gauge");
+            var now = el("div", "fill-now");
+            now.style.width = pct(n.budget.current, n.budget.capTokens) + "%";
+            var after = el("div", "fill-after");
+            gauge.appendChild(now);
+            gauge.appendChild(after);
+            gauge.appendChild(el("div", "cap"));
+            var box = document.getElementById("gauge-nested");
+            box.appendChild(head);
+            box.appendChild(gauge);
+            return { entry: n, readout: readout, after: after };
+          });
+
         // ---- edit cards ----
         var host = document.getElementById("edits");
+        var editCap =
+          ((P.config || {}).maxEditsPerRun || 0) +
+          (P.nested || []).reduce(function (sum, n) {
+            return sum + (n.maxEdits || 0);
+          }, 0);
         document.getElementById("editcount").textContent =
-          edits.length + " of " + ((P.config || {}).maxEditsPerRun || edits.length) + " (learning-rate cap)";
+          edits.length +
+          " of " +
+          (editCap || edits.length) +
+          ((P.nested || []).length ? " (learning-rate cap, per file)" : " (learning-rate cap)");
 
         if (!edits.length) {
           var eligibleWithoutEdits = Number((P.stats || {}).gapClusters) || 0;
@@ -1165,7 +1239,11 @@
             );
           }
           head.appendChild(
-            edit.targetsMemoryFile ? deltaNode("memory", delta) : deltaNode("on trigger", delta - descriptionDelta),
+            edit.nestedMemoryFile
+              ? deltaNode(edit.nestedMemoryFile, delta)
+              : edit.targetsMemoryFile
+                ? deltaNode("memory", delta)
+                : deltaNode("on trigger", delta - descriptionDelta),
           );
           if (descriptionDelta) head.appendChild(deltaNode("description (always-loaded)", descriptionDelta));
           card.appendChild(head);
@@ -1230,6 +1308,8 @@
           }
 
           var decide = el("div", "decide");
+          var reasons = el("div", "reject-reasons");
+          reasons.hidden = true;
           ["accept", "reject"].forEach(function (choice) {
             var btn = el("button", choice === "accept" ? "on-accept" : "", choice.toUpperCase());
             btn.type = "button";
@@ -1240,11 +1320,41 @@
                 b.className = "";
               });
               btn.className = "on-" + choice;
+              if (choice === "accept") {
+                delete rejectReasons[edit.id];
+                reasons.hidden = true;
+                Array.prototype.forEach.call(reasons.children, function (chip) {
+                  chip.className = "reason-chip";
+                });
+              } else {
+                reasons.hidden = false;
+              }
               recompute();
             });
             decide.appendChild(btn);
           });
+          REJECT_REASONS.forEach(function (token) {
+            var chip = el("button", "reason-chip", token);
+            chip.type = "button";
+            chip.setAttribute("data-reason", token);
+            chip.addEventListener("click", function () {
+              if (decisions[edit.id] !== "rejected") return;
+              if (rejectReasons[edit.id] === token) {
+                delete rejectReasons[edit.id];
+                chip.className = "reason-chip";
+              } else {
+                rejectReasons[edit.id] = token;
+                Array.prototype.forEach.call(reasons.children, function (other) {
+                  other.className = "reason-chip";
+                });
+                chip.className = "reason-chip on";
+              }
+              recompute();
+            });
+            reasons.appendChild(chip);
+          });
           body.appendChild(decide);
+          body.appendChild(reasons);
           card.appendChild(body);
           host.appendChild(card);
         });
@@ -1361,6 +1471,26 @@
           after.style.width = pct(tok, budget.capTokens) + "%";
           after.className = "fill-after" + (over ? " over" : "");
 
+          nestedGauges.forEach(function (g) {
+            var nestedTok = g.entry.budget.current;
+            edits.forEach(function (e) {
+              if (decisions[e.id] === "accepted" && e.nestedMemoryFile === g.entry.memoryFile.path) {
+                nestedTok += e.deltaTokens || 0;
+              }
+            });
+            var nestedCap = g.entry.budget.capTokens;
+            var nestedOver =
+              g.entry.budget.current > nestedCap ? nestedTok >= g.entry.budget.current : nestedTok > nestedCap;
+            g.readout.textContent = "";
+            g.readout.appendChild(
+              document.createTextNode("now " + fmt(g.entry.budget.current) + " tok -> if accepted "),
+            );
+            g.readout.appendChild(el("b", nestedOver ? "over" : null, fmt(nestedTok) + " tok"));
+            g.readout.appendChild(document.createTextNode(" / " + fmt(nestedCap) + " cap"));
+            g.after.style.width = pct(nestedTok, nestedCap) + "%";
+            g.after.className = "fill-after" + (nestedTok > nestedCap ? " over" : "");
+          });
+
           var proj = document.getElementById("projline");
           proj.textContent = "";
           proj.appendChild(document.createTextNode("projected: "));
@@ -1377,7 +1507,9 @@
         document.getElementById("btn-apply").addEventListener("click", function () {
           var vector = edits
             .map(function (e) {
-              return e.id + "=" + decisions[e.id];
+              var value = decisions[e.id];
+              if (value === "rejected" && rejectReasons[e.id]) value += ":" + rejectReasons[e.id];
+              return e.id + "=" + value;
             })
             .join(" ");
           var message = "BACKPASS_DECISIONS " + vector;
@@ -1385,7 +1517,7 @@
             window.lavish.queuePrompt(message, {
               tag: "choice",
               text: vector,
-              data: { question: "backpass-apply-decisions", decisions: decisions },
+              data: { question: "backpass-apply-decisions", decisions: decisions, rejectReasons: rejectReasons },
               queueKey: "backpass-apply-decisions",
             });
             this.textContent = "QUEUED - SEND FROM THE PANEL";

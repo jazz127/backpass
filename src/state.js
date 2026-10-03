@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 
@@ -22,9 +23,12 @@ export const STATE_EXCLUDE_LINE = `${STATE_DIRNAME}/`;
  *   evidence-summary.json  folded evidence (stage 2)
  *   proposal.json          latest parseable tier-2 synthesis; absent if none was produced (stage 3)
  *   rejections.json        edits the human rejected, and the evidence weight behind them
+ *                          (hunk key always; add/rewrite/remove also remember gap and
+ *                          instruction identities so a reworded proposal stays suppressed)
  *   gap-ledger.json        gap observations by gap and session, accumulated across runs (src/gap-ledger.js)
  *   agent-probe-cache.json TTL'd availability/auth verdicts per agent|model (src/agents.js)
  *   prompts/               the exact prompts of the last run, one file per model turn
+ *   raw/                   a SQLite-store session's events while its analysis call runs (src/analyze.js)
  *   synthesis/             the staging copy the synthesis agent edits natively (src/workspace.js)
  *   apply/                 the rendered Lavish apply surface
  */
@@ -67,8 +71,20 @@ export class State {
           `could not secure state directory ${this.root} as mode ${this.dirMode.toString(8)}: ${err.message}`,
         );
       }
+      // Windows has no POSIX mode bits: chmod only toggles the read-only attribute and stat
+      // always reports 0o666, so this check cannot pass there. On Windows the directory's
+      // privacy comes from the NTFS ACL it inherits from the user profile instead - but only
+      // when the directory actually resolves under that profile (e.g. XDG_CONFIG_HOME left at
+      // its default). A redirected location (a synced or network folder) inherits no such ACL,
+      // so that case proceeds with a warning instead of an unverifiable pass or a hard failure.
       const actualMode = fs.statSync(this.root).mode & 0o777;
-      if (actualMode !== this.dirMode) {
+      if (process.platform === "win32") {
+        if (!isInsideUserProfile(this.root)) {
+          warn(
+            `state directory ${this.root} is outside your Windows user profile; its privacy can't be verified there (it won't inherit the profile's ACL) - restrict access to it yourself`,
+          );
+        }
+      } else if (actualMode !== this.dirMode) {
         throw new UserError(
           `could not secure state directory ${this.root} as mode ${this.dirMode.toString(8)} (got ${actualMode.toString(8)})`,
         );
@@ -318,6 +334,13 @@ function pathEntryExists(file) {
   }
 }
 
+/** Windows paths are case-insensitive, so compare resolved paths lowercased. */
+function isInsideUserProfile(dir) {
+  const resolvedDir = path.resolve(dir).toLowerCase();
+  const home = path.resolve(os.homedir()).toLowerCase();
+  return resolvedDir === home || resolvedDir.startsWith(`${home}${path.sep}`);
+}
+
 export function safeFileName(id) {
   return String(id)
     .replace(/[^A-Za-z0-9._-]/g, "_")
@@ -336,7 +359,7 @@ function migrateEvidenceRecord(record, transcript, identity) {
   };
 }
 
-export const ANALYSIS_INDEX_VERSION = 5;
+export const ANALYSIS_INDEX_VERSION = 6;
 
 /**
  * Cache key for a transcript's analysis. Source revision, evidence policy, distiller,
@@ -374,10 +397,32 @@ export function isEvidenceFresh(evidence, transcript, memoryHash, route = null) 
   return evidence.key === evidenceKey(transcript, memoryHash, route ?? evidence.route ?? null);
 }
 
+/** Optional reject-reason tokens the apply surface may attach. Unknown tokens are dropped. */
+export const REJECT_REASONS = ["wrong-evidence", "already-covered", "too-narrow", "too-broad", "disagree"];
+
+const IDENTITY_KINDS = new Set(["add", "rewrite", "remove"]);
+
+export function normalizeRejectReason(reason) {
+  const token = String(reason || "")
+    .trim()
+    .toLowerCase();
+  return REJECT_REASONS.includes(token) ? token : undefined;
+}
+
+function intersects(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || !left.length || !right.length) return false;
+  const other = new Set(right);
+  return left.some((id) => other.has(id));
+}
+
 /**
  * A rejected edit stays rejected until materially new evidence arrives - the design's
  * replacement for a DEFER button (captain tweak 3). "Materially new" means the edit is
- * backed by strictly more transcripts than when it was turned down.
+ * backed by strictly more transcripts than when it was turned down. Add, rewrite, and
+ * remove also match on measured gap and instruction identities, so a later proposal of
+ * the same decision in different bytes stays suppressed. Extract and move stay hunk-key
+ * only: repositioning or paying for a skill is not the same decision as changing instruction
+ * text. A reason code never revives an edit, and neither does a model-reported count.
  */
 export function rejectionKey(edit) {
   let body;
@@ -397,19 +442,36 @@ export function rejectionKey(edit) {
 }
 
 export function isSuppressedByRejection(edit, rejections) {
-  const prior = rejections.entries[rejectionKey(edit)];
-  if (!prior) return false;
-  return (edit.transcripts || 0) <= (prior.transcripts || 0);
+  const entries = rejections?.entries || {};
+  const transcripts = edit.transcripts || 0;
+  const prior = entries[rejectionKey(edit)];
+  if (prior && transcripts <= (prior.transcripts || 0)) return true;
+  if (!IDENTITY_KINDS.has(edit.kind)) return false;
+  for (const remembered of Object.values(entries)) {
+    if (remembered.kind !== edit.kind || remembered.file !== edit.file) continue;
+    if (transcripts > (remembered.transcripts || 0)) continue;
+    if (intersects(edit.gapIds, remembered.gapIds) || intersects(edit.instructionIds, remembered.instructionIds)) {
+      return true;
+    }
+  }
+  return false;
 }
 
-export function recordRejection(edit, rejections, at = new Date().toISOString(), provenance = null) {
-  rejections.entries[rejectionKey(edit)] = {
+export function recordRejection(edit, rejections, at = new Date().toISOString(), reason, provenance = null) {
+  const normalized = normalizeRejectReason(reason);
+  const entry = {
     kind: edit.kind,
     file: edit.file,
     title: edit.title,
     transcripts: edit.transcripts || 0,
     rejectedAt: at,
     ...(provenance ? { provenance } : {}),
+    ...(Array.isArray(edit.gapIds) && edit.gapIds.length ? { gapIds: [...edit.gapIds] } : {}),
+    ...(Array.isArray(edit.instructionIds) && edit.instructionIds.length
+      ? { instructionIds: [...edit.instructionIds] }
+      : {}),
+    ...(normalized ? { reason: normalized } : {}),
   };
+  rejections.entries[rejectionKey(edit)] = entry;
   return rejections;
 }

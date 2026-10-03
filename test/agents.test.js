@@ -81,6 +81,10 @@ import os from "node:os";
 import path from "node:path";
 import { CONFIG_FILENAME } from "../src/config.js";
 
+// `loadConfig` merges ~/.config/backpass/config.json; a host with its own `ladders` there
+// would replace the default ladders these tests assert against.
+process.env.XDG_CONFIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-agents-config-"));
+
 function tmpRepo(config) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-agents-"));
   if (config) fs.writeFileSync(path.join(dir, CONFIG_FILENAME), JSON.stringify(config));
@@ -477,6 +481,24 @@ test("only classifiable failures fall through; real-work errors propagate unchan
     (err) => err === timeout,
   );
   assert.equal((await resolver.resolve("analysis")).agent, "pi", "a timeout on real work does not demote");
+  const authTimeout = new AcpxError("acpx pi session prompt timed out after 300s", {
+    timedOut: true,
+    stderr: "AUTH_REQUIRED",
+  });
+  let calls = 0;
+  await assert.rejects(
+    resolver.withFallthrough("analysis", async () => {
+      calls++;
+      throw authTimeout;
+    }),
+    (err) => err === authTimeout,
+  );
+  assert.equal(calls, 1);
+  assert.equal(
+    (await resolver.resolve("analysis")).agent,
+    "pi",
+    "a timeout whose stderr looks classifiable still does not demote",
+  );
   await assert.rejects(
     resolver.withFallthrough("analysis", async () => {
       throw new Error("analysis returned no parseable JSON");
@@ -577,6 +599,33 @@ test("explicit config or CLI flags pin the role and skip the ladder entirely", a
       return true;
     },
   );
+
+  // A timeout on real work is not the pinned agent's verdict: it propagates unchanged.
+  const timedOut = new AcpxError("acpx claude session prompt timed out after 600s", { timedOut: true });
+  await assert.rejects(
+    resolver.withFallthrough("synthesis", async () => {
+      throw timedOut;
+    }),
+    (err) => {
+      assert.equal(err, timedOut);
+      return true;
+    },
+  );
+
+  // Even when its stderr carries a classifiable diagnostic, a pinned timeout is not retried.
+  const authTimeout = new AcpxError("acpx claude session prompt timed out after 600s", {
+    timedOut: true,
+    stderr: "AUTH_REQUIRED",
+  });
+  let pinnedCalls = 0;
+  await assert.rejects(
+    resolver.withFallthrough("synthesis", async () => {
+      pinnedCalls++;
+      throw authTimeout;
+    }),
+    (err) => err === authTimeout,
+  );
+  assert.equal(pinnedCalls, 1, "a pinned timeout is not retried");
 });
 
 test("a pinned agent that returns no output gets a provider-account hint, not a login one", async () => {
@@ -1123,6 +1172,13 @@ test("acpx failure classification and the per-adapter tables", () => {
   );
   assert.equal(
     classifyAcpxFailure({ stderr: 'Cannot apply --model "x": the ACP agent did not advertise that model.' }),
+    "model-unavailable",
+  );
+  assert.equal(
+    classifyAcpxFailure({
+      stderr:
+        "[acpx] error: RUNTIME QUEUE_RUNTIME_PROMPT_FAILED Internal error: API Error: 400 Claude Code 2.1.215 does not support this model; version 2.1.280 or newer is required.",
+    }),
     "model-unavailable",
   );
   assert.equal(classifyAcpxFailure({ spawnError: { code: "ENOENT" } }), "unreachable");

@@ -18,6 +18,9 @@ import { classifyInteraction } from "../src/interaction.js";
 import { sanitizeEvidence } from "../src/analyze.js";
 import { renderPrompt } from "../src/prompts.js";
 import { assertSourceCurrent } from "../src/provenance.js";
+import { ATTRIBUTION_VERSION, attributeTranscripts, checkoutRoots, owningFile } from "../src/nested.js";
+import { nestedCorpora } from "../src/commands/analyze.js";
+import { State } from "../src/state.js";
 
 const fixtures = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -90,6 +93,59 @@ function config(overrides = {}) {
       ...overrides,
     },
   };
+}
+
+for (const cached of [false, true]) {
+  test(`remote external sessions stay root-only with ${cached ? "stale cached" : "fresh"} attribution`, async () => {
+    const repo = projectRepo();
+    const weight = { path: "apps/api/AGENTS.md", dir: "apps/api" };
+    const state = new State(repo.root, { exclude: false }).ensure();
+    const transcripts = [];
+    for (const [index, remote] of [true, true, false].entries()) {
+      const { root } = makeSnapshot((payload, manifest) => {
+        manifest.sourceNamespace = `attribution-${index}`;
+        payload.sourceId = manifest.sourceNamespace;
+        payload.association.cwd = path.join(repo.root, weight.dir);
+        payload.association.remotes = repo.remotes;
+        if (remote) payload.association.hostAlias = "remote-host";
+        payload.events[1].name = "edit";
+        payload.events[1].input = { path: "handler.ts" };
+      });
+      const discovered = await discoverTranscripts({
+        repo,
+        scope: projectScope(repo),
+        config: config(),
+        sessionSource: root,
+      });
+      assert.equal(discovered.transcripts.length, 1);
+      const transcript = discovered.transcripts[0];
+      assert.equal(transcript.sourceKind, "external");
+      assert.equal(transcript.host, null);
+      assert.equal(transcript.sourceHostAlias, remote ? "remote-host" : null);
+      transcripts.push(transcript);
+    }
+    const cachePath = path.join(state.root, "nested", "attribution.json");
+    if (cached)
+      state.writeJsonFile(cachePath, {
+        version: ATTRIBUTION_VERSION,
+        roots: checkoutRoots(repo),
+        entries: Object.fromEntries(
+          transcripts.map((transcript) => [
+            transcriptIdentity(transcript),
+            { content: transcript.contentSignature, paths: ["apps/api/handler.ts"] },
+          ]),
+        ),
+      });
+    const attribution = await attributeTranscripts(transcripts, repo, state);
+    const remoteIds = transcripts.slice(0, 2).map(transcriptIdentity);
+    for (const id of remoteIds) assert.equal(attribution.get(id), null);
+    assert.equal(owningFile(remoteIds, [weight], attribution), null);
+    assert.deepEqual(attribution.get(transcriptIdentity(transcripts[2])), ["apps/api/handler.ts"]);
+    const { corpora } = await nestedCorpora({ repo, config: { state } }, [weight], transcripts);
+    assert.deepEqual(corpora[0].transcripts, [transcripts[2]]);
+    const saved = state.readJsonFile(cachePath, null);
+    for (const id of remoteIds) assert.equal(saved.entries[id], undefined);
+  });
 }
 
 test("golden source scans and reads with origin harness, project, interaction, and stable identity", async () => {

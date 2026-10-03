@@ -215,6 +215,21 @@ test("a later uncited observation preserves the session's failed-trigger citatio
   assert.equal(summary.gaps[0].failedTriggerSessions, 2);
 });
 
+test("ledger observations carry the entry id onto the folded cluster", () => {
+  const phrasing = "Always pin the Node version with nvm.";
+  const ledger = { version: 1, entries: {} };
+  recordGapObservations(ledger, [
+    record("s1", [{ proposedInstruction: phrasing }]),
+    record("s2", [{ proposedInstruction: phrasing }]),
+  ]);
+  const observations = ledgerGapObservations(ledger, MEMORY_PATH);
+  assert.ok(observations.every((observation) => observation.gapIds?.length));
+  const summary = foldEvidence([], { gapObservations: observations, minGapEvidence: 2 });
+  const entryId = Object.keys(ledger.entries)[0];
+  assert.equal(summary.gaps[0].id, entryId);
+  assert.deepEqual(summary.gaps[0].ids, [entryId]);
+});
+
 test("a sighting older than gapLedgerMaxAge expires instead of resurfacing indefinitely", async () => {
   const h = harness({ gapLedgerMaxAge: "90d" });
   await run(h, [record("claude-s1", [GAP])]);
@@ -374,6 +389,18 @@ test("mergeGapEntries unions sessions without double-counting and keeps the shor
   assert.equal(entries.length, 1);
   assert.equal(entries[0].proposedInstruction, "The short phrasing.");
   assert.deepEqual(Object.keys(entries[0].sessions).sort(), ["s1", "s2", "shared"], "a session never counts twice");
+});
+
+test("a merged entry keeps the absorbed entry id in its folded gap identity", () => {
+  const absorbedId = "a".repeat(16);
+  const targetId = "b".repeat(16);
+  const ledger = ledgerWith(
+    { id: absorbedId, text: "Pin the Node version with nvm before scripts.", sessions: ["s1"] },
+    { id: targetId, text: "Pin Node with nvm.", sessions: ["s2", "s3"] },
+  );
+  mergeGapEntries(ledger, [[absorbedId, targetId]]);
+  const summary = foldEvidence([], { gapObservations: ledgerGapObservations(ledger, MEMORY_PATH), minGapEvidence: 2 });
+  assert.deepEqual(summary.gaps[0].ids, [absorbedId, targetId]);
 });
 
 test("mergeGapEntries reconciles conflicting domain votes without target-order bias", () => {

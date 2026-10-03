@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { loadConfig } from "./config.js";
 import { classifyInteraction, INTERACTIVE, NON_INTERACTIVE } from "./interaction.js";
 import { findInstructionUnit, instructionUnits, resolveMemoryFiles, similarity } from "./memory.js";
+import { rootOwnsGap } from "./nested.js";
 import {
   GAP_COVERED_THRESHOLD,
   GAP_SIMILARITY_THRESHOLD,
@@ -41,11 +42,15 @@ import { crossSurfaceDuplicates } from "./overlap.js";
  *     flagged (`crossSurfaceDuplicates` in `src/overlap.js`). Description overlap exposes
  *     duplicated always-loaded tokens; body overlap is placement evidence because skill
  *     bodies load only on trigger. Both are report-only: nothing is deleted here.
+ *  5. With nested memory files named (`src/nested.js`), `route` keeps only the gap clusters
+ *     this file owns: the others are counted in `routedGaps` and left to the file whose
+ *     pass owns them. A failed trigger always stays with the root file, which owns the
+ *     skill layer. Without `route` the summary is exactly what it always was.
  */
 
 /**
  * @param {object[]} evidenceRecords
- * @param {{ minGapEvidence?: number, minGapProjects?: number, checkProjectCoverage?: boolean, memoryFile?: object|null, gapObservations?: object[]|null, skills?: object[] }} [options]
+ * @param {{ minGapEvidence?: number, minGapProjects?: number, checkProjectCoverage?: boolean, memoryFile?: object|null, gapObservations?: object[]|null, skills?: object[], route?: { weight: string|null, rootPath: string, ownerOf: (sessionIds: string[]) => string|null, rootOwnedGaps?: { sessionId: string, quote: string }[][] }|null }} [options]
  */
 export function foldEvidence(
   evidenceRecords,
@@ -56,6 +61,7 @@ export function foldEvidence(
     memoryFile = null,
     gapObservations = null,
     skills = [],
+    route = null,
   } = {},
 ) {
   const usable = evidenceRecords.filter((e) => e && e.status === "ok");
@@ -233,23 +239,51 @@ export function foldEvidence(
     })
     .sort((a, b) => b.negative - a.negative || b.sessions - a.sessions || a.instruction.localeCompare(b.instruction));
 
-  const decided = gapClusters.map((cluster) => {
+  const allDecided = gapClusters.map((cluster) => {
     const eligibleItems = cluster.items.filter((item) => !item.projectCovered);
     const vote = clusterDomainVote(eligibleItems);
+    const gapIds = ledgerIdsOfCluster(cluster);
     return {
       proposedInstruction: cluster.proposedInstruction,
       sessions: cluster.sessions.size,
       projects: cluster.projects.size,
       projectCoveredSessions: cluster.projectCoveredSessions.size,
       recurrenceRisk: highestRisk(eligibleItems),
-      quotes: eligibleItems.slice(0, 6).map((i) => ({ text: i.quote, effect: i.mistake, source: i.source })),
+      quotes: representativeGapItems(eligibleItems, route).map((i) => ({
+        text: i.quote,
+        effect: i.mistake,
+        source: i.source,
+      })),
       orchestrationSightings: vote.orchestrationSightings,
       mixed: vote.mixed,
       majorityOrchestration: vote.majorityOrchestration,
       ...failedTriggerOf(eligibleItems, minGapEvidence),
       ...projectSpecificNote(cluster, minGapProjects),
+      ...(gapIds.length === 1 ? { id: gapIds[0] } : {}),
+      ...(gapIds.length ? { ids: gapIds } : {}),
     };
   });
+
+  const owners = route
+    ? gapClusters.map((cluster, index) =>
+        allDecided[index].failedTriggerSkill ? null : route.ownerOf([...cluster.sessions]),
+      )
+    : null;
+  const routedGaps = [];
+  const decided = route
+    ? allDecided.filter((cluster, index) => {
+        const owner = rootOwnsGap(gapClusters[index].items, route.rootOwnedGaps) ? null : owners[index];
+        if (owner === route.weight) return true;
+        if (cluster.sessions >= minGapEvidence && !cluster.majorityOrchestration) {
+          routedGaps.push({
+            proposedInstruction: cluster.proposedInstruction,
+            sessions: cluster.sessions,
+            owner: owner ?? route.rootPath,
+          });
+        }
+        return false;
+      })
+    : allDecided;
 
   const proposalClusters = decided.filter((cluster) => !cluster.majorityOrchestration);
   // Default 1 means the gate exists but does not require a second project.
@@ -278,7 +312,7 @@ export function foldEvidence(
     else reportOnlyByReason.tooFewProjects += 1;
   }
 
-  return {
+  const summary = {
     version: 1,
     generatedAt: new Date().toISOString(),
     analyzedSessions,
@@ -310,6 +344,30 @@ export function foldEvidence(
     reportOnlyGaps,
     oversized: oversizedRestructureTargets(memoryFile, parentNonComplianceSessions, minGapEvidence),
   };
+  if (route) {
+    if (route.weight === null) {
+      summary.rootOwnedGaps = gapClusters
+        .filter((cluster, index) => owners[index] === null && cluster.sessions.size >= minGapEvidence)
+        .map((cluster) => cluster.items.map((item) => ({ sessionId: item.sessionId, quote: item.quote })));
+    }
+    summary.routedGaps = routedGaps;
+    summary.sourceSessions = sourceSessionsOf(issuedSources, usable, persistedObservations);
+  }
+  return summary;
+}
+
+/** Which session each issued source label names, for the routing gate in `buildProposal`. */
+function sourceSessionsOf(issuedSources, usable, observations) {
+  const identities = [
+    ...usable.map((record) => record.transcript.identity || record.transcript.id),
+    ...observations.map((observation) => observation?.sessionId),
+  ];
+  const out = {};
+  issuedSources.forEach((source, index) => {
+    const label = normalizeSourceLabel(source);
+    if (label && identities[index] && !out[label]) out[label] = identities[index];
+  });
+  return out;
 }
 
 function parentSessionCounts(memoryFile, instructions, field) {
@@ -370,6 +428,7 @@ export function clusterGapObservations(observations, { checkProjectCoverage = fa
       project: obs.project || null,
       projectCovered,
       coveredBySkills: new Set(obs.coveredBySkill ? [obs.coveredBySkill] : []),
+      gapIds: new Set(observationGapIds(obs)),
     };
     if (cluster) {
       const sessionItem = cluster.items.find((candidate) => candidate.sessionId === obs.sessionId);
@@ -377,6 +436,7 @@ export function clusterGapObservations(observations, { checkProjectCoverage = fa
         if (obs.coveredBySkill) sessionItem.coveredBySkills.add(obs.coveredBySkill);
         if (observationDomain(obs) !== "orchestration") sessionItem.domain = "project";
         if (projectCovered) sessionItem.projectCovered = true;
+        for (const id of observationGapIds(obs)) sessionItem.gapIds.add(id);
       } else {
         cluster.items.push(item);
       }
@@ -403,6 +463,20 @@ export function clusterGapObservations(observations, { checkProjectCoverage = fa
     );
   }
   return clusters;
+}
+
+function observationGapIds(obs) {
+  if (Array.isArray(obs.gapIds)) return obs.gapIds.filter(Boolean);
+  return obs.gapId ? [obs.gapId] : [];
+}
+
+/** Stable ledger entry ids on a cluster: the union of item ids, never a hash of current phrasing. */
+function ledgerIdsOfCluster(cluster) {
+  const ids = new Set();
+  for (const item of cluster.items || []) {
+    for (const id of item.gapIds || []) ids.add(id);
+  }
+  return [...ids].sort();
 }
 
 function isProjectCoveredSighting(obs) {
@@ -467,6 +541,18 @@ function observationDomain(obs) {
  * Cluster domain is a majority of per-sighting votes, not a pre-filter. Ties (including
  * 1 of 2) stay project so one inconsistent analysis call cannot kill a real recurrence.
  */
+function representativeGapItems(items, route) {
+  const selected = items.slice(0, 6);
+  if (!route || items.length <= 6) return selected;
+  const owner = route.ownerOf(items.map((item) => item.sessionId));
+  if (route.ownerOf(selected.map((item) => item.sessionId)) === owner) return selected;
+  for (const item of items.slice(6)) {
+    const candidate = [...selected.slice(0, -1), item];
+    if (route.ownerOf(candidate.map((entry) => entry.sessionId)) === owner) return candidate;
+  }
+  return selected;
+}
+
 function clusterDomainVote(items) {
   const orchestrationSightings = items.filter((item) => item.domain === "orchestration").length;
   const sightings = items.length;
@@ -612,6 +698,13 @@ function renderEvidence(summary, { includeReportOnly }) {
 
   lines.push("");
   lines.push("### Synthesis-eligible gap clusters (mistakes no current instruction covers)");
+  if (summary.routedGaps?.length) {
+    const owners = [...new Set(summary.routedGaps.map((gap) => gap.owner))];
+    lines.push(
+      `- ${summary.routedGaps.length} more gap cluster(s) belong to ${owners.join(", ")}: the sessions behind ` +
+        `them place them there, and that file's own pass trains them, so they are not evidence for this file`,
+    );
+  }
   if (summary.totals.orchestrationGapSightings) {
     lines.push(
       `- ${summary.totals.orchestrationGapSightings} orchestration-domain sighting(s) counted as domain ` +

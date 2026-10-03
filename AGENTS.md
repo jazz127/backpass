@@ -61,15 +61,15 @@ Each owning file's comments and tests hold the detail; read them before touching
   repo's `.backpassrc.json` is an error; host keys are never auto-accepted. Remote cache names are hashed
   (`src/discovery/cache.js`) and a short fetch is never analyzed as a whole session.
 - **Adapters drift and must stay fail-soft**: fix an adapter and its golden fixture together
-  (`src/discovery/adapters/`). Hermes ingests only `cli`/`acp` sessions (see its header).
+  (`src/discovery/adapters/`). Hermes ingests `cli`/`acp`, plus `tui` only with an absolute cwd (see its header).
 - **Skills** (`src/skills.js`): a bare `skills/` dir is never auto-detected; writes never target
   `skillSearchPaths`; search-path and out-of-repo skills are withheld from staging (`src/workspace.js`).
 - **Memory resolution is pointer-aware** (`resolveMemoryFiles` in `src/memory.js`); a second full file is warned
   about, never silently ignored or double-written.
 - **Spawns**: a Windows shim refusal (`ERR_WINDOWS_SHIM_UNSAFE_ARG`, `src/subprocess.js`) must be raised by name
   before any generic result handling at every spawn boundary. All model calls go through `src/acpx.js`
-  (acpx is alpha); only session creation gets the cold-start timeout, and `result.timedOut` is handled before
-  generic exits.
+  (acpx is alpha); only session creation gets the cold-start timeout, and a timeout (`result.timedOut`, or acpx's
+  own exit 3, `ACPX_EXIT_TIMEOUT`) is handled before generic exits.
 - **Model and effort overrides are invocation-scoped** (`src/harness-invoke.js`): never ACP `set model` or Pi
   `set thought_level`, never edit-then-restore harness defaults.
 - **Agent auto-pick is probe-then-verify** (`src/agents.js`, `AgentResolver.withFallthrough`); a timeout or bare
@@ -79,6 +79,9 @@ Each owning file's comments and tests hold the detail; read them before touching
   function replacer, never a string one (untrusted text can contain `$&`).
 - **The live TUI is an enhancement layer** (`src/tui/`): output must be identical with it inactive (non-TTY, CI,
   `NO_COLOR`, `--quiet`, `--json`), with clean stdout.
+- **Rejection identity** (`src/state.js`): a refused add/rewrite/remove stays suppressed on the same kind and file
+  when measured `gapIds` or `instructionIds` overlap, until a strictly higher session count; extract/move stay
+  hunk-key only. Optional reject reasons never revive an edit and are not evidence floors.
 - Cursor IDE support is deferred; see the header of `src/discovery/adapters/cursor-ide.js`.
 
 ## Maintaining this file

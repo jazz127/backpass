@@ -1,9 +1,12 @@
+import path from "node:path";
+
 import { renderHunkLines } from "./diff.js";
 import { normalizeSourceLabel } from "./gap-ledger.js";
 import { mixFromCounts } from "./interaction.js";
 import { memoryTextHash } from "./memory.js";
 import { editSkills, loadedCopies, parseFrontmatter, skillDescriptionTokens } from "./skills.js";
 import { budgetGateKind, budgetStatus, estimateTokens } from "./tokens.js";
+import { rootOwnsGap } from "./nested.js";
 import { isSkillFilePath, normalizeRecoveryLine, recoveredLineCounts } from "./workspace.js";
 
 /**
@@ -295,18 +298,52 @@ export function renderChangesForPrompt(measured, memoryFile) {
     .join("\n\n");
 }
 
+function evidenceQuoteKey(item) {
+  return `${item.source || ""}\n${item.text || ""}`;
+}
+
+function ledgerIdsOfGap(gap) {
+  if (Array.isArray(gap?.ids) && gap.ids.length) return gap.ids.map(String).filter(Boolean);
+  return gap?.id ? [String(gap.id)] : [];
+}
+
 /**
- * Validate the annotated, measured changes against the mechanical gates. Returns
- * `{ proposal, violations }`; the caller decides whether to re-prompt or fail loudly.
- *
- * `context.measured` is the workspace measurement (`measureWorkspace`); `rawResult` is
- * the model's annotation. Nothing textual is taken from the model: the hunks, their
- * deltas, the projected budget, and even whether an edit is an addition are measured.
+ * Ledger ids for gap clusters whose catalog quotes uniquely match this edit's evidence.
+ * Exact `source + text` against `summary.gaps` quotes - the same join
+ * `countedEvidenceProjects` uses. A quote that hits two clusters is not unique and is
+ * skipped, so a shared sentence cannot weld two gaps into one suppression identity.
  */
+function uniqueMatchingGapIds(edit, summary) {
+  const ids = new Set();
+  for (const item of edit.evidence || []) {
+    const key = evidenceQuoteKey(item);
+    const matching = (summary?.gaps || []).filter((gap) =>
+      (gap.quotes || []).some((quote) => evidenceQuoteKey(quote) === key),
+    );
+    if (matching.length !== 1) continue;
+    for (const id of ledgerIdsOfGap(matching[0])) ids.add(id);
+  }
+  return [...ids];
+}
+
+/**
+ * Content hashes of the instruction units the memory-file hunks actually touch, using the
+ * same range intersection as removal evidence. Positional aliases shift whenever a unit
+ * is added above, so they never persist. Annotate `instructions` never widen this set.
+ */
+function measuredInstructionIds(memoryHunks, memoryFile) {
+  const measured = new Set();
+  if (!memoryFile?.units) return [];
+  for (const hunk of memoryHunks) {
+    for (const unit of unitsRemovedBy(hunk, memoryFile)) measured.add(unit.hash);
+  }
+  return [...measured];
+}
+
 function countedEvidenceProjects(edit, summary) {
-  const quoted = new Set(edit.evidence.map((item) => `${item.source || ""}\n${item.text || ""}`));
+  const quoted = new Set(edit.evidence.map((item) => evidenceQuoteKey(item)));
   const byGap = (summary?.gaps || [])
-    .filter((gap) => gap.quotes?.some((quote) => quoted.has(`${quote.source || ""}\n${quote.text || ""}`)))
+    .filter((gap) => gap.quotes?.some((quote) => quoted.has(evidenceQuoteKey(quote))))
     .map((gap) => gap.projects || 0);
   // Gap clusters carry their own project count, but an edit that rewrites or reinforces
   // an existing instruction quotes instruction-row evidence, which carries none. The fold
@@ -320,6 +357,14 @@ function countedEvidenceProjects(edit, summary) {
   return Math.max(0, byQuoteSource.size, ...byGap);
 }
 
+/**
+ * Validate the annotated, measured changes against the mechanical gates. Returns
+ * `{ proposal, violations }`; the caller decides whether to re-prompt or fail loudly.
+ *
+ * `context.measured` is the workspace measurement (`measureWorkspace`); `rawResult` is
+ * the model's annotation. Nothing textual is taken from the model: the hunks, their
+ * deltas, the projected budget, and even whether an edit is an addition are measured.
+ */
 export function buildProposal(rawResult, context) {
   const {
     memoryFile,
@@ -334,6 +379,7 @@ export function buildProposal(rawResult, context) {
     scope = null,
     target = { kind: "surface" },
     provenance = null,
+    routing = null,
   } = context;
 
   const violations = [];
@@ -581,6 +627,36 @@ export function buildProposal(rawResult, context) {
       continue;
     }
 
+    // With nested memory files named, a new instruction lands in the most specific file
+    // whose directory every session behind it worked in (`src/nested.js`). Measured from
+    // the edit's own quote sources, like the floor above; a rewrite or removal stays with
+    // the file whose text it changes.
+    if (routing && !preservesAlwaysLoaded(edit.kind) && hunks.some((h) => h.added > 0 && h.removed === 0)) {
+      const sessions = [
+        ...new Set(
+          edit.evidence.map((item) => summary?.sourceSessions?.[normalizeSourceLabel(item.source)]).filter(Boolean),
+        ),
+      ];
+      const sightings = edit.evidence.map((item) => ({
+        sessionId: summary?.sourceSessions?.[normalizeSourceLabel(item.source)],
+        quote: item.text,
+      }));
+      const owner = rootOwnsGap(sightings, routing.rootOwnedGaps)
+        ? routing.rootPath
+        : (routing.ownerOf(sessions) ?? routing.rootPath);
+      const here = routing.weight ?? routing.rootPath;
+      if (owner !== here) {
+        violations.push(
+          owner === routing.rootPath
+            ? `edit ${edit.id} ("${edit.title}") adds an instruction backed by sessions that did not all work ` +
+                `under ${path.posix.dirname(here)}/; cross-cutting evidence belongs in ${owner}, not ${here} - revert it`
+            : `edit ${edit.id} ("${edit.title}") adds an instruction backed only by sessions that worked under ` +
+                `${path.posix.dirname(owner)}/; it belongs in ${owner}, which its own pass trains - revert it`,
+        );
+        continue;
+      }
+    }
+
     // A removal is measured the same way: a hunk that only deletes text, outside an
     // extraction or move, deletes instructions - whatever the edit's kind says. Deleting
     // an instruction needs the same corroboration adding one does, and only negatives the
@@ -638,6 +714,8 @@ export function buildProposal(rawResult, context) {
       title: edit.title,
       rationale: edit.rationale,
       instructions: edit.instructions,
+      gapIds: uniqueMatchingGapIds(edit, summary),
+      instructionIds: measuredInstructionIds(memoryHunks, memoryFile),
       evidence: edit.evidence,
       transcripts: edit.transcripts,
       ...(evidenceProjects != null ? { projects: evidenceProjects } : {}),
@@ -740,7 +818,7 @@ export function buildProposal(rawResult, context) {
       `applying every proposed edit leaves ${surfaceLabel} at ${budget.projected} tokens, ` +
         `${budget.over} over the ${config.budgetTokens}-token budget`,
     );
-  } else if (gate === "shrink") {
+  } else if (gate === "shrink" && !(routing?.allowUnchangedRoot && accepted.length === 0)) {
     violations.push(
       `${surfaceLabel} is already ${budget.current - config.budgetTokens} tokens over the ` +
         `${config.budgetTokens}-token budget, so this run must shrink it, but the proposed edits ` +

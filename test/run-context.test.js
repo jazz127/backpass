@@ -78,6 +78,20 @@ test("snapshot, selected corpus, memory, and skill bytes remain pinned", () => {
   assert.throws(() => checkRunContext(ctx, corpus), /inputMemoryDigest/);
 });
 
+test("named nested memory bytes remain pinned through propose and apply", () => {
+  const { ctx, repoRoot } = fixture("nested-pin", { restricted: true });
+  const nestedPath = "apps/api/AGENTS.md";
+  ctx.config.nestedMemoryFiles = [nestedPath];
+  fs.mkdirSync(path.join(repoRoot, "apps/api"), { recursive: true });
+  fs.writeFileSync(path.join(repoRoot, nestedPath), "# API rules\n\n- Check contracts.\n");
+  const pinned = checkRunContext(ctx, corpus, { start: true });
+  const proposal = { provenance: { source: { kind: "native" }, runContext: pinned } };
+  checkProposalRunContext(ctx, proposal);
+  fs.appendFileSync(path.join(repoRoot, nestedPath), "- Check timeouts.\n");
+  assert.throws(() => checkRunContext(ctx, corpus), /inputMemoryDigest/);
+  assert.throws(() => checkProposalRunContext(ctx, proposal), /proposal is stale/);
+});
+
 test("inventory records exact bytes and pointer target; restricted mode refuses an unapproved pointer", () => {
   const { ctx, repoRoot } = fixture("pointer", { restricted: true });
   const inventory = inputInventory(ctx);

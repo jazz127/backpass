@@ -236,7 +236,8 @@ function removeEmptyDirectories(directories) {
  * The only place in backpass that writes to the repo.
  *
  * Everything upstream is read-only analysis; a run only changes the weights here, after
- * a human accepted specific edits. Before the first byte is written, the memory file and
+ * explicit per-edit decisions arrive through `cmdApply` (see `../commands/apply.js`).
+ * Before the first byte is written, the memory file and
  * every decided non-memory target must still be the files the proposal measured; the
  * accepted subset must clear the same cap/shrink budget gate as the full proposal
  * (`budgetGateKind`); every accepted edit for a file must compose against that file's
@@ -246,7 +247,7 @@ function removeEmptyDirectories(directories) {
  * A file is therefore applied all at once or not at all. Skills are written only after
  * every accepted edit has composed, and before the files that reference them.
  */
-export function applyDecisions({ proposal, decisions, repo, state, config, dryRun = false }) {
+export function applyDecisions({ proposal, decisions, repo, state, config, dryRun = false, rejectReasons = {} }) {
   const accepted = proposal.edits.filter((e) => decisions[e.id] === "accepted");
   const rejected = proposal.edits.filter((e) => decisions[e.id] === "rejected");
 
@@ -469,7 +470,7 @@ export function applyDecisions({ proposal, decisions, repo, state, config, dryRu
     0,
   );
   const memoryPlan = resolvedPlanned.find((item) => item.relative === proposal.memoryFile.path);
-  if (accepted.length) {
+  if (memoryPlan || plannedSkills.length || resolvedPlanned.some((item) => existingSkillPaths.has(item.relative))) {
     const budgetFailure = acceptedSubsetBudgetFailure({
       proposal,
       capTokens: config.budgetTokens,
@@ -483,6 +484,41 @@ export function applyDecisions({ proposal, decisions, repo, state, config, dryRu
       return results;
     }
   }
+  // A nested memory file is a weight of its own with a budget of its own: the accepted
+  // subset that lands in it clears the same cap/shrink gate the root surface does.
+  const nestedBudgets = new Map();
+  for (const nested of proposal.nested || []) {
+    const plan = resolvedPlanned.find((item) => item.relative === nested.memoryFile.path);
+    if (!plan) continue;
+    if (!config.nestedMemoryFiles?.includes(plan.relative)) {
+      results.failed.push({
+        file: plan.relative,
+        error: `${plan.relative} is no longer named in nestedMemoryFiles; re-run \`backpass propose\` with the current scope`,
+      });
+      continue;
+    }
+    const capTokens = config.nestedBudgetTokens ?? config.budgetTokens;
+    const budget = budgetStatus(plan.before, plan.text, capTokens);
+    const gate = budgetGateKind(budget);
+    if (gate === "cap") {
+      results.failed.push({
+        file: plan.relative,
+        error:
+          `accepted edits leave ${plan.relative} at ${budget.projected} tokens, ${budget.over} over its ` +
+          `${capTokens}-token budget; choose a compatible set of edits`,
+      });
+    } else if (gate === "shrink") {
+      results.failed.push({
+        file: plan.relative,
+        error:
+          `${plan.relative} is already ${budget.current - capTokens} tokens over its ${capTokens}-token budget, ` +
+          `so accepted edits must shrink it, but they change it by ${budget.delta >= 0 ? "+" : ""}${budget.delta} ` +
+          "tokens; choose a compatible set of edits",
+      });
+    }
+    nestedBudgets.set(plan.relative, budget);
+  }
+  if (results.failed.length) return results;
 
   const canonical = plannedSkills.find(
     ({ skill }) => skill.path === CANONICAL_SKILLS_DIR || skill.path.startsWith(`${CANONICAL_SKILLS_DIR}/`),
@@ -565,7 +601,7 @@ export function applyDecisions({ proposal, decisions, repo, state, config, dryRu
     results.written = [];
   };
   const landedDescriptionDelta = descriptionTokensProjected - descriptionTokensNow;
-  const budgetTarget = memoryPlan || orderedPlanned[0];
+  const budgetTarget = memoryPlan || orderedPlanned.find((item) => !nestedBudgets.has(item.relative));
   const surfaceBudget = budgetTarget
     ? budgetStatus(memoryText, memoryPlan?.text ?? memoryText, config.budgetTokens, {
         current: descriptionTokensNow,
@@ -574,7 +610,7 @@ export function applyDecisions({ proposal, decisions, repo, state, config, dryRu
     : null;
   for (const item of orderedPlanned) {
     const { relative, resolved, text, applied } = item;
-    const budget = item === budgetTarget ? surfaceBudget : null;
+    const budget = item === budgetTarget ? surfaceBudget : (nestedBudgets.get(relative) ?? null);
 
     let commit = null;
     try {
@@ -593,6 +629,9 @@ export function applyDecisions({ proposal, decisions, repo, state, config, dryRu
     results.written.push({ file: relative, edits: applied, budget, dryRun });
   }
 
+  for (const [relative, budget] of nestedBudgets) {
+    if (!budget.withinBudget) results.warnings.push(overBudgetWarning(relative, budget));
+  }
   if (surfaceBudget && !surfaceBudget.withinBudget) {
     results.warnings.push(
       overBudgetWarning(
@@ -622,7 +661,8 @@ export function applyDecisions({ proposal, decisions, repo, state, config, dryRu
   // Rejections are remembered so the same edit is not re-proposed without new evidence.
   if (!dryRun && rejected.length) {
     const rejections = state.readRejections();
-    for (const edit of rejected) recordRejection(edit, rejections, new Date().toISOString(), proposal.provenance);
+    for (const edit of rejected)
+      recordRejection(edit, rejections, new Date().toISOString(), rejectReasons[edit.id], proposal.provenance);
     state.writeRejections(rejections);
     results.rejectionsRecorded = true;
   }

@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { UserError } from "./logger.js";
 import { pointerImportPath, resolveMemoryFiles } from "./memory.js";
+import { resolveNestedMemoryFiles } from "./nested.js";
 import { selectedCorpusDigest, assertSourceCurrent } from "./provenance.js";
 import { loadProjectSkills, resolveOverflowTarget } from "./skills.js";
 import { userClaudeSkillsDir } from "./config.js";
@@ -26,7 +27,17 @@ export function inputInventory(ctx) {
     allowExternal: userScope,
   });
   const skills = loadProjectSkills(repo.root, overflow.dir, config.skillsDirs || [], { exact: userScope });
-  const approvedMemory = new Set(resolved.all.map((file) => path.resolve(file.absolute)));
+  const nestedFiles = resolveNestedMemoryFiles(repo.root, config);
+  const memoryFiles = [
+    ...resolved.all,
+    ...nestedFiles.flatMap((weight) => [weight.file, ...weight.separate]).filter(Boolean),
+  ];
+  const primaryTargets = new Set(
+    [resolved.primary, ...nestedFiles.map((weight) => weight.file)]
+      .filter(Boolean)
+      .map((file) => fs.realpathSync(file.absolute)),
+  );
+  const approvedMemory = new Set(memoryFiles.map((file) => path.resolve(file.absolute)));
   const entries = [];
   const add = (kind, logicalPath, absolute, pointerTarget = null) => {
     const target = fs.realpathSync(absolute);
@@ -36,13 +47,13 @@ export function inputInventory(ctx) {
     const bytes = fs.readFileSync(absolute);
     entries.push({ kind, path: logicalPath, target, bytes: bytes.length, digest: digest(bytes), pointerTarget });
   };
-  for (const file of resolved.all) {
+  for (const file of memoryFiles) {
     const pointerTarget = pointerImportPath(file.text, { fromDir: path.dirname(file.absolute) });
     if (ctx.flags["child-env"] === "restricted" && pointerTarget) {
       if (!approvedMemory.has(path.resolve(pointerTarget)) || !fs.existsSync(pointerTarget)) {
         throw new UserError(`unapproved memory pointer: ${file.path} -> ${pointerTarget}`);
       }
-      if (fs.realpathSync(pointerTarget) !== fs.realpathSync(resolved.primary.absolute)) {
+      if (!primaryTargets.has(fs.realpathSync(pointerTarget))) {
         throw new UserError(`unapproved memory pointer: ${file.path} -> ${pointerTarget}`);
       }
     }

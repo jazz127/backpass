@@ -213,11 +213,17 @@ test("nested resolution exposes every resolved sibling even when the named file 
   const [api, docs] = resolveNestedMemoryFiles(repo.root, {
     nestedMemoryFiles: [API.path, "apps/docs/AGENTS.md"],
   });
-  assert.deepEqual(api.all.map((file) => file.path), [API.path, "apps/api/CLAUDE.md"]);
+  assert.deepEqual(
+    api.all.map((file) => file.path),
+    [API.path, "apps/api/CLAUDE.md"],
+  );
   assert.equal(api.all[1].text, pointer);
   assert.deepEqual(api.separate, []);
   assert.equal(docs.file, null);
-  assert.deepEqual(docs.all.map((file) => file.path), ["apps/docs/CLAUDE.md"]);
+  assert.deepEqual(
+    docs.all.map((file) => file.path),
+    ["apps/docs/CLAUDE.md"],
+  );
 });
 
 // ---------- where a session worked ----------

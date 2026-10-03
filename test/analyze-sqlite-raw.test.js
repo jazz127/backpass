@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 
 import { analyzeTranscripts, reclaimExpiredRawFiles } from "../src/analyze.js";
 import { State } from "../src/state.js";
+import { nestedContext } from "../src/nested.js";
 
 /**
  * The raw-transcript escape hatch for a session in a SQLite store (opencode here).
@@ -498,3 +499,73 @@ test("a SQLite raw file is removed when the analysis response is invalid", () =>
   const seen = JSON.parse(fs.readFileSync(seenLog, "utf8"));
   assert.equal(fs.existsSync(seen.rawPath), false);
 });
+
+for (const bound of [false, true]) {
+  for (const nested of [false, true]) {
+    for (const linked of bound ? [false, true] : [true]) {
+      test(
+        `${bound ? "bound" : "unbound"} ${nested ? "nested" : "root"} SQLite analysis ${bound && linked ? "refuses" : "preserves"} ${linked ? "linked" : "private"} raw directories`,
+        { skip: process.platform === "win32" },
+        async (t) => {
+          const home = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-sqlite-private-home-"));
+          const dir = initRepo();
+          const database = writeStore(home, dir);
+          t.mock.method(os, "homedir", () => home);
+          const rootState = new State(dir, {
+            stateDir: path.join(dir, "isolated-state"),
+            exclude: false,
+            ...(bound ? { mode: 0o700, binding: { kind: "project", root: dir } } : {}),
+          }).ensure();
+          const state = nested
+            ? nestedContext(
+                { repo: { root: dir }, config: { state: rootState, budgetTokens: 5000 } },
+                { path: "apps/api/AGENTS.md" },
+              ).config.state
+            : rootState;
+          const outside = path.join(dir, "outside-raw");
+          fs.mkdirSync(outside, { mode: 0o700 });
+          const rawDir = path.join(state.root, "raw");
+          if (linked) fs.symlinkSync(outside, rawDir, "dir");
+          let calls = 0;
+          let observedEvents = [];
+          const analyze = () =>
+            analyzeTranscripts({
+              transcripts: [{ harness: "opencode", id: "ses_here", nativeId: "ses_here", path: database }],
+              memoryFile: { path: "AGENTS.md", units: [] },
+              memoryHash: "private-raw",
+              repo: { root: dir },
+              config: {
+                state,
+                jobs: 1,
+                discovery: { minUserTurns: 2 },
+                agents: {
+                  resolve: async () => ({ agent: "pi" }),
+                  withFallthrough: async () => {
+                    calls += 1;
+                    const [file] = fs.readdirSync(rawDir);
+                    observedEvents = fs
+                      .readFileSync(path.join(rawDir, file), "utf8")
+                      .trim()
+                      .split("\n")
+                      .map((line) => JSON.parse(line));
+                    return { text: JSON.stringify({ positive: [], negative: [], gaps: [] }) };
+                  },
+                },
+              },
+            });
+          if (bound && linked) {
+            await assert.rejects(analyze(), /unsafe private state path/);
+            assert.equal(calls, 0);
+          } else {
+            const summary = await analyze();
+            assert.equal(summary.analyzed, 1);
+            assert.equal(calls, 1);
+            assert.ok(observedEvents.some((event) => event.text === "Please build the project."));
+            assert.deepEqual(fs.readdirSync(rawDir), []);
+          }
+          assert.deepEqual(fs.readdirSync(outside), []);
+        },
+      );
+    }
+  }
+}

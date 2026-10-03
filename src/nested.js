@@ -13,7 +13,7 @@ import {
   separateFileWarning,
 } from "./memory.js";
 import { pathInRoot } from "./scope.js";
-import { State, safeFileName, sha256 } from "./state.js";
+import { State, assertPrivatePath, safeFileName, sha256 } from "./state.js";
 import { budgetStatus } from "./tokens.js";
 import { transcriptIdentity } from "./transcript.js";
 
@@ -178,6 +178,7 @@ export function nestedContext(ctx, weight) {
   const state = new State(ctx.repo.root, {
     stateDir: nestedStateDir(rootState, weight.path),
     mode: rootState.dirMode,
+    binding: rootState.binding,
     exclude: false,
   }).ensure();
   state.rejectionsPath = rootState.rejectionsPath;
@@ -308,6 +309,12 @@ export function workedPaths(transcript, events, roots) {
 export async function attributeTranscripts(transcripts, repo, state) {
   const roots = checkoutRoots(repo);
   const cachePath = path.join(state.root, "nested", "attribution.json");
+  if (state.binding) {
+    const dir = path.dirname(cachePath);
+    assertPrivatePath(dir, { privateLeaf: true });
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    assertPrivatePath(dir, { privateLeaf: true });
+  }
   const cache = state.readJsonFile(cachePath, null);
   const prior =
     cache?.version === ATTRIBUTION_VERSION &&
@@ -320,7 +327,7 @@ export async function attributeTranscripts(transcripts, repo, state) {
   const attribution = new Map();
   for (const transcript of transcripts) {
     const identity = transcriptIdentity(transcript);
-    if (transcript.host) {
+    if (transcript.host || transcript.sourceHostAlias) {
       attribution.set(identity, null);
       continue;
     }

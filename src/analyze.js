@@ -10,7 +10,7 @@ import { instructionUnits, renderInstructionIndex } from "./memory.js";
 import { renderSkillIndexForAnalysis } from "./skills.js";
 import { renderPrompt } from "./prompts.js";
 import { filterGapLedger, renderOpenGapIndex } from "./gap-ledger.js";
-import { evidenceKey, isEvidenceFresh, safeFileName } from "./state.js";
+import { assertPrivatePath, evidenceKey, isEvidenceFresh, safeFileName } from "./state.js";
 import { analysisRoute, routeForPick } from "./provenance.js";
 import { emitProgress } from "./progress.js";
 import { UserError, color, info, warn } from "./logger.js";
@@ -313,7 +313,9 @@ function promptPathFor(state, transcript) {
  */
 function sessionRawPath(transcript, state) {
   if (transcript.host || !getAdapter(transcript.harness)?.sqliteBacked || !state?.root) return null;
-  return path.resolve(state.root, "raw", `${randomUUID()}.jsonl`);
+  const dir = path.resolve(state.root, "raw");
+  if (state.binding) assertPrivatePath(dir, { privateLeaf: true });
+  return path.join(dir, `${randomUUID()}.jsonl`);
 }
 
 async function analyzeOne({

@@ -18,6 +18,7 @@ import {
   checkoutRoots,
   mergeNestedProposals,
   nestedContext,
+  nestedStateDir,
   owningFile,
   reportNestedMemoryFiles,
   renderAlsoLoaded,
@@ -622,6 +623,105 @@ test("a nested pass runs in its own state under its own budget, sharing only the
     5000,
   );
 });
+
+function boundNestedContext() {
+  const repo = makeRepo();
+  const state = new State(repo.root, {
+    stateDir: path.join(repo.root, "private-state"),
+    mode: 0o700,
+    exclude: false,
+    binding: { kind: "project", root: repo.root },
+  }).ensure();
+  return { repo, config: { state, budgetTokens: 5000 } };
+}
+
+test(
+  "bound nested state keeps private evidence and shares rejection reads and writes",
+  { skip: process.platform === "win32" },
+  () => {
+    const ctx = boundNestedContext();
+    const rootState = ctx.config.state;
+    const state = nestedContext(ctx, API).config.state;
+    const transcript = { harness: "pi", id: "private-session" };
+    state.writeEvidence(transcript, { status: "ok", transcript });
+    assert.equal(state.readEvidence(transcript).status, "ok");
+    assert.equal(fs.statSync(state.evidencePath(transcript)).mode & 0o777, 0o600);
+    assert.deepEqual(state.readJsonFile(path.join(state.root, "scope.json"), null), rootState.binding);
+    rootState.writeRejections({ version: 1, entries: { first: { title: "root rejection" } } });
+    assert.equal(state.readRejections().entries.first.title, "root rejection");
+    state.writeRejections({ version: 1, entries: { second: { title: "nested rejection" } } });
+    assert.equal(rootState.readRejections().entries.second.title, "nested rejection");
+  },
+);
+
+for (const directory of ["nested", "weight", "evidence", "apply"]) {
+  test(
+    `bound nested state refuses a linked ${directory} directory before writing`,
+    { skip: process.platform === "win32" },
+    () => {
+      const ctx = boundNestedContext();
+      const rootState = ctx.config.state;
+      const weightDir = nestedStateDir(rootState, API.path);
+      const link =
+        directory === "nested"
+          ? path.join(rootState.root, "nested")
+          : directory === "weight"
+            ? weightDir
+            : path.join(weightDir, directory);
+      const outside = path.join(ctx.repo.root, "outside-state");
+      fs.mkdirSync(outside, { mode: 0o700 });
+      fs.mkdirSync(path.dirname(link), { recursive: true, mode: 0o700 });
+      fs.symlinkSync(outside, link, "dir");
+      assert.throws(() => {
+        const state = nestedContext(ctx, API).config.state;
+        state.writeEvidence({ harness: "pi", id: "escaped" }, { status: "ok" });
+      }, /unsafe private state path/);
+      assert.deepEqual(fs.readdirSync(outside), []);
+    },
+  );
+}
+
+for (const cached of [false, true]) {
+  test(
+    `bound attribution refuses a linked nested directory with ${cached ? "cached" : "missing"} state`,
+    { skip: process.platform === "win32" },
+    async () => {
+      const ctx = boundNestedContext();
+      const outside = path.join(ctx.repo.root, "outside-attribution");
+      fs.mkdirSync(outside, { mode: 0o700 });
+      const cache = path.join(outside, "attribution.json");
+      if (cached) fs.writeFileSync(cache, JSON.stringify({ version: 1, entries: {} }), { mode: 0o600 });
+      const before = cached ? fs.readFileSync(cache, "utf8") : null;
+      fs.symlinkSync(outside, path.join(ctx.config.state.root, "nested"), "dir");
+      await assert.rejects(attributeTranscripts([], ctx.repo, ctx.config.state), /unsafe private state path/);
+      assert.deepEqual(fs.readdirSync(outside), cached ? ["attribution.json"] : []);
+      if (cached) assert.equal(fs.readFileSync(cache, "utf8"), before);
+    },
+  );
+}
+
+test(
+  "bound attribution creates a private cache and reuses local placements",
+  { skip: process.platform === "win32" },
+  async () => {
+    const ctx = boundNestedContext();
+    const transcript = {
+      harness: "pi",
+      id: "local",
+      cwd: path.join(ctx.repo.root, API.dir),
+      path: "missing",
+      mtimeMs: 1,
+      bytes: 1,
+    };
+    const first = await attributeTranscripts([transcript], ctx.repo, ctx.config.state);
+    assert.deepEqual(first.get(transcriptIdentity(transcript)), [API.dir]);
+    const dir = path.join(ctx.config.state.root, "nested");
+    assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(path.join(dir, "attribution.json")).mode & 0o777, 0o600);
+    const second = await attributeTranscripts([transcript], ctx.repo, ctx.config.state);
+    assert.deepEqual(second, first);
+  },
+);
 
 function mergedProposal() {
   const repo = makeRepo({

@@ -1,5 +1,73 @@
 # Changelog
 
+## [0.1.29](https://github.com/jazz127/backpass/compare/backpass-v0.1.28...backpass-v0.1.29) (2026-10-03)
+
+
+### Features
+
+* add existing-skill extracts and memory moves ([#83](https://github.com/jazz127/backpass/issues/83)) ([8527339](https://github.com/jazz127/backpass/commit/8527339a2c73cb3b3b399d88ca7c964f02274929))
+* add external session source contract and file selection ([b8e7891](https://github.com/jazz127/backpass/commit/b8e78919c2a991779cfcb334f1ba827affa4bcc6))
+* add user-level memory scope ([#101](https://github.com/jazz127/backpass/issues/101)) ([be2633a](https://github.com/jazz127/backpass/commit/be2633a6ab3552582b8e30bc418a86e5a61e44a7))
+* **apply:** unify funnel from findings to proposed edits ([#104](https://github.com/jazz127/backpass/issues/104)) ([aa714d1](https://github.com/jazz127/backpass/commit/aa714d1d5debe9b1ea39818245411a2563eac3de))
+* **apply:** visualize gap evidence funnel on review board ([#69](https://github.com/jazz127/backpass/issues/69)) ([627b6d3](https://github.com/jazz127/backpass/commit/627b6d39cd372038b6d8db667d84cbf4fc4efb01))
+* classify and balance interactive corpus sessions ([#85](https://github.com/jazz127/backpass/issues/85)) ([f887a32](https://github.com/jazz127/backpass/commit/f887a320aeb5764e928b6f2fceb1f85142424eb7))
+* **config:** add skillSearchPaths for read-only awareness of shared skill libraries ([#138](https://github.com/jazz127/backpass/issues/138)) ([2bade32](https://github.com/jazz127/backpass/commit/2bade325f15b0fb0ed087245e045a6979961f738))
+* **discovery:** add Hermes transcript support ([#26](https://github.com/jazz127/backpass/issues/26)) ([0445c33](https://github.com/jazz127/backpass/commit/0445c330701fc82686c1113483ea35c9226da1e1))
+* **discovery:** collect sessions from remote machines over SSH ([#124](https://github.com/jazz127/backpass/issues/124)) ([fa712a0](https://github.com/jazz127/backpass/commit/fa712a07e928ae392f1c489788387a3fe4724e81))
+* **discovery:** read sessions from a selected external session-source snapshot ([d7297f8](https://github.com/jazz127/backpass/commit/d7297f8a38dc18d5536df62cb3cdad3776d78eeb))
+* initial commit ([df73d32](https://github.com/jazz127/backpass/commit/df73d3255b0a78b4d5ada0f3f733c4a131cb59ae))
+* judge gap identity and safeguard instruction removals ([#64](https://github.com/jazz127/backpass/issues/64)) ([85d5105](https://github.com/jazz127/backpass/commit/85d51055568cd106f516acca0df5f20603ede939))
+* let runs target one memory file or skill ([#108](https://github.com/jazz127/backpass/issues/108)) ([5392421](https://github.com/jazz127/backpass/commit/5392421a7a5e892025e10e7f49721c77e0a1f43b))
+* **prompts:** make gap domain a causal test and soften the extraction nudge ([#67](https://github.com/jazz127/backpass/issues/67)) ([4ae93a6](https://github.com/jazz127/backpass/commit/4ae93a6aa00cab2ad128ae0cb342f8f39e06b7b7))
+* report cross-surface skill duplication ([#81](https://github.com/jazz127/backpass/issues/81)) ([13f05f8](https://github.com/jazz127/backpass/commit/13f05f83b5882de433c579eab05431028fde6071))
+* **sources:** add external session source v1 contract validator ([555fe7c](https://github.com/jazz127/backpass/commit/555fe7c50f285792779161f724f3792ce17e254c))
+* split oversized paragraphs for precise attribution ([#88](https://github.com/jazz127/backpass/issues/88)) ([8c040dc](https://github.com/jazz127/backpass/commit/8c040dcbc52d8dc20a9d2036c6f6684655c785b8))
+* treat project skills as improvable memory ([#72](https://github.com/jazz127/backpass/issues/72)) ([d8cbdb6](https://github.com/jazz127/backpass/commit/d8cbdb68ca20a9ad6626810e0c24a576e43223c7))
+
+
+### Bug Fixes
+
+* **acpx:** fall through the agent ladder on clean-exit empty output ([#122](https://github.com/jazz127/backpass/issues/122)) ([764ed95](https://github.com/jazz127/backpass/commit/764ed9551ec68dc88b7b6a424e028d1a4c122b29))
+* **acpx:** report acpx budget kills as timeouts, not empty-output ([#145](https://github.com/jazz127/backpass/issues/145)) ([b295a2d](https://github.com/jazz127/backpass/commit/b295a2d1d999fa5272e498176dd2cfce752e094b))
+* **acpx:** send --agent session prompts through the prompt subcommand ([#100](https://github.com/jazz127/backpass/issues/100)) ([d9610ea](https://github.com/jazz127/backpass/commit/d9610eaae2bfb23fca92804ea468b2d1cf579a81))
+* **acpx:** stop discarding stderr on empty-output classification ([#131](https://github.com/jazz127/backpass/issues/131)) ([4f5a684](https://github.com/jazz127/backpass/commit/4f5a684a4f3130ab5676b1ba26ec9928eca92287))
+* **acpx:** surface opencode stderr on exec and session-prompt failures ([#109](https://github.com/jazz127/backpass/issues/109)) ([e167503](https://github.com/jazz127/backpass/commit/e167503bfa58d583f815c00742f98973721e1ac7))
+* allow acpx adapters to finish cold starts ([#110](https://github.com/jazz127/backpass/issues/110)) ([46a80e1](https://github.com/jazz127/backpass/commit/46a80e1415c1a8aa156c53f5a077ff37e380a755))
+* **analyze:** discard evidence quotes that do not appear in the distilled trace ([#118](https://github.com/jazz127/backpass/issues/118)) ([7d171f7](https://github.com/jazz127/backpass/commit/7d171f750003fb7921824c88a652ed766aff83ce))
+* **apply:** compare skillsDir by resolved logical path and drop placeholder failure locations ([#133](https://github.com/jazz127/backpass/issues/133)) ([dc4124d](https://github.com/jazz127/backpass/commit/dc4124d342d18a4ea523483eb3bdd7d0c693424c))
+* **apply:** open the review surface in the browser, announce waits once, and strip the quoted URL ([#18](https://github.com/jazz127/backpass/issues/18)) ([b922b9e](https://github.com/jazz127/backpass/commit/b922b9e4a57cee592684c8146f5ffbab6ab5fce7))
+* **apply:** prevent partial writes from stale proposals ([#47](https://github.com/jazz127/backpass/issues/47)) ([2f0df29](https://github.com/jazz127/backpass/commit/2f0df29e3394a8321502e79774b04024fe84419b))
+* **apply:** reopen ended Lavish review sessions ([#45](https://github.com/jazz127/backpass/issues/45)) ([b0d92bc](https://github.com/jazz127/backpass/commit/b0d92bcb4f17175b9fcb24787ac1304991392d23))
+* **apply:** revalidate accepted edit subsets ([#38](https://github.com/jazz127/backpass/issues/38)) ([1f473f2](https://github.com/jazz127/backpass/commit/1f473f22c30128cb4b2c27f7fe0e7910f9c6787c))
+* **apply:** stop replacement-token expansion from corrupting apply.html ([#60](https://github.com/jazz127/backpass/issues/60)) ([f5d3c3a](https://github.com/jazz127/backpass/commit/f5d3c3addec9d3b9b900ab000da7fb01019a3187))
+* **config:** preserve global agent pins after init ([#137](https://github.com/jazz127/backpass/issues/137)) ([7d92241](https://github.com/jazz127/backpass/commit/7d922418138ea7089c5469130fa94ecbde2e87b4))
+* correct synthesis orchestration and apply rollback ([#52](https://github.com/jazz127/backpass/issues/52)) ([8466e65](https://github.com/jazz127/backpass/commit/8466e65b59874ea5ab045664591244296b6d9518))
+* count only fold-issued sources toward session floors ([#105](https://github.com/jazz127/backpass/issues/105)) ([093921b](https://github.com/jazz127/backpass/commit/093921bf2f72b9383af34feef2836caf6285ac37))
+* decide gap cluster domains after grouping ([#87](https://github.com/jazz127/backpass/issues/87)) ([71a96c8](https://github.com/jazz127/backpass/commit/71a96c826f0ddd2ac2ecdaff327ce350d4019d51))
+* **discovery:** count copied external sessions once toward evidence floors ([fc6e8fe](https://github.com/jazz127/backpass/commit/fc6e8fee8bdfc46c37cfd445d9b3dbab66547ddd))
+* **discovery:** discover BB-managed Pi sessions ([#58](https://github.com/jazz127/backpass/issues/58)) ([450c1a2](https://github.com/jazz127/backpass/commit/450c1a20ecb1a4655c56adcbea20c5f12b9d98f2))
+* **discovery:** find sessions in sibling clones ([#84](https://github.com/jazz127/backpass/issues/84)) ([6cbb5b2](https://github.com/jazz127/backpass/commit/6cbb5b2c7e1acf56990507d8cd39545683b63046))
+* **discovery:** recover Hermes v26 CLI sessions ([#28](https://github.com/jazz127/backpass/issues/28)) ([37457f9](https://github.com/jazz127/backpass/commit/37457f96c0907c746b983c511f0b4ba158834c7b))
+* **discovery:** scan CLAUDE_CONFIG_DIR alongside the default claude store ([#41](https://github.com/jazz127/backpass/issues/41)) ([8d0b423](https://github.com/jazz127/backpass/commit/8d0b423a164bcd691b9ae6ac6fbcf3f1435aff3e))
+* enable synthesis harness write access ([#82](https://github.com/jazz127/backpass/issues/82)) ([698b0b8](https://github.com/jazz127/backpass/commit/698b0b8fb0f97444f8355264206f1f153dcae8a6))
+* keep EOF-reaching mixed removals merged ([#65](https://github.com/jazz127/backpass/issues/65)) ([8b5f625](https://github.com/jazz127/backpass/commit/8b5f6252c728f6181d56f889b699b2a890cf2471))
+* keep harness model and effort overrides invocation-scoped ([#49](https://github.com/jazz127/backpass/issues/49)) ([c6d9ba8](https://github.com/jazz127/backpass/commit/c6d9ba8179e16fb9f720213afd705b5acb2ec88f))
+* make transcript sampling deterministic and sticky ([#62](https://github.com/jazz127/backpass/issues/62)) ([d177b06](https://github.com/jazz127/backpass/commit/d177b06a5fa6767391f17a26efeab862b4bc258a))
+* preserve stable evidence session identities ([#106](https://github.com/jazz127/backpass/issues/106)) ([c4eb1fa](https://github.com/jazz127/backpass/commit/c4eb1fa505d0146b0853ff7d160cd88926cd7216))
+* **prompts:** classify orchestrator repo gaps as project ([#78](https://github.com/jazz127/backpass/issues/78)) ([7b1a915](https://github.com/jazz127/backpass/commit/7b1a915aa757a632b8ae053eca773ab79158c17b))
+* **redact:** stop secret redaction from eating benign tool arguments ([#153](https://github.com/jazz127/backpass/issues/153)) ([7bd9150](https://github.com/jazz127/backpass/commit/7bd9150cf281cb56fc8e7cae1441a7a7fd26f042))
+* require corroboration for every always-loaded edit ([#103](https://github.com/jazz127/backpass/issues/103)) ([e63f555](https://github.com/jazz127/backpass/commit/e63f555c175911a521b3a34652a6c049f1378bb9))
+* resolve ambiguous model ids by provider auth type ([#90](https://github.com/jazz127/backpass/issues/90)) ([698d57f](https://github.com/jazz127/backpass/commit/698d57f79c471d86ab1cb3c44a36408daaeecb72))
+* retry transient harness capability probes ([#80](https://github.com/jazz127/backpass/issues/80)) ([658c2e9](https://github.com/jazz127/backpass/commit/658c2e9621c43b82e0c7b43c462ac137f91562e4))
+* scope evidence reuse to the current memory hash ([#54](https://github.com/jazz127/backpass/issues/54)) ([2fc6dbf](https://github.com/jazz127/backpass/commit/2fc6dbf48648f921879935a521535f55d77205e4))
+* select OpenCode variants via session-local ACP effort ([#73](https://github.com/jazz127/backpass/issues/73)) ([80b6834](https://github.com/jazz127/backpass/commit/80b683400a107d4e2dee88b5bfcaec410690a391))
+* **skills:** honor configured Claude skills directory ([#96](https://github.com/jazz127/backpass/issues/96)) ([b20c40c](https://github.com/jazz127/backpass/commit/b20c40c0e2578ae3f0f7e0af45a4468a9a2e7e20))
+* **skills:** parse YAML block-scalar descriptions correctly ([#94](https://github.com/jazz127/backpass/issues/94)) ([e957398](https://github.com/jazz127/backpass/commit/e957398734211ce4939a9de055862c1ce96a246b))
+* **skills:** preserve real Claude skills directories ([#136](https://github.com/jazz127/backpass/issues/136)) ([158dcd6](https://github.com/jazz127/backpass/commit/158dcd6343291d90f4eb3119402aa58dcf128326))
+* **skills:** see and stage skills that are symlinked into the loaded directory ([#113](https://github.com/jazz127/backpass/issues/113)) ([4e67dcd](https://github.com/jazz127/backpass/commit/4e67dcd7e3d5e17f9fb84deee45d65d4763de954))
+* **subprocess:** launch windows npm shims through the command interpreter ([#93](https://github.com/jazz127/backpass/issues/93)) ([9ea9da2](https://github.com/jazz127/backpass/commit/9ea9da2c606288e2e98afe88d249f12c96d3583c))
+* **synthesize:** count stray edit-turn writes as touched ([#132](https://github.com/jazz127/backpass/issues/132)) ([dbaeced](https://github.com/jazz127/backpass/commit/dbaeced54538bb5bdd8e27c59f5eb8307e4f1109))
+
 ## [0.1.28](https://github.com/kunchenguid/backpass/compare/backpass-v0.1.27...backpass-v0.1.28) (2026-09-25)
 
 

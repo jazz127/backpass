@@ -112,7 +112,7 @@ export function applyNestedMemoryConfig(repoRoot, config) {
  * imports it is fine, and a sibling with content of its own is reported as separate.
  * Pure - `reportNestedMemoryFiles` turns the result into warnings and refusals.
  *
- * @returns {{ path: string, dir: string, file: object | null, pointerTo: string | null, separate: object[] }[]}
+ * @returns {{ path: string, dir: string, file: object | null, pointerTo: string | null, separate: object[], all: object[] }[]}
  */
 export function resolveNestedMemoryFiles(repoRoot, config) {
   return (config.nestedMemoryFiles || []).map((relative) => {
@@ -122,7 +122,7 @@ export function resolveNestedMemoryFiles(repoRoot, config) {
       .filter((sibling) => sibling !== relative);
     const resolved = resolveMemoryFiles(repoRoot, [relative, ...siblings]);
     const file = resolved.all.find((candidate) => candidate.path === relative) || null;
-    if (!file) return { path: relative, dir, file: null, pointerTo: null, separate: [] };
+    if (!file) return { path: relative, dir, file: null, pointerTo: null, separate: [], all: resolved.all };
     const imported = pointerImportPath(file.text, { fromDir: path.dirname(file.absolute) });
     return {
       path: relative,
@@ -130,6 +130,7 @@ export function resolveNestedMemoryFiles(repoRoot, config) {
       file,
       pointerTo: imported ? pathInRoot(imported, repoRoot) : null,
       separate: resolved.separate,
+      all: resolved.all,
     };
   });
 }

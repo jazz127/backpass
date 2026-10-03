@@ -203,6 +203,23 @@ test("nested sibling warnings ignore an unrelated root memory basename", () => {
   assert.deepEqual(lines, []);
 });
 
+test("nested resolution exposes every resolved sibling even when the named file is missing", () => {
+  const pointer = "<!-- API memory -->\n@AGENTS.md\n";
+  const repo = makeRepo({
+    [API.path]: "# API memory\n",
+    "apps/api/CLAUDE.md": pointer,
+    "apps/docs/CLAUDE.md": "# Documentation memory\n",
+  });
+  const [api, docs] = resolveNestedMemoryFiles(repo.root, {
+    nestedMemoryFiles: [API.path, "apps/docs/AGENTS.md"],
+  });
+  assert.deepEqual(api.all.map((file) => file.path), [API.path, "apps/api/CLAUDE.md"]);
+  assert.equal(api.all[1].text, pointer);
+  assert.deepEqual(api.separate, []);
+  assert.equal(docs.file, null);
+  assert.deepEqual(docs.all.map((file) => file.path), ["apps/docs/CLAUDE.md"]);
+});
+
 // ---------- where a session worked ----------
 
 test("structured tool paths use their call workdir; cwd only places sessions without paths", () => {

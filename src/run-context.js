@@ -28,10 +28,7 @@ export function inputInventory(ctx) {
   });
   const skills = loadProjectSkills(repo.root, overflow.dir, config.skillsDirs || [], { exact: userScope });
   const nestedFiles = resolveNestedMemoryFiles(repo.root, config);
-  const memoryFiles = [
-    ...resolved.all,
-    ...nestedFiles.flatMap((weight) => [weight.file, ...weight.separate]).filter(Boolean),
-  ];
+  const memoryFiles = [...resolved.all, ...nestedFiles.flatMap((weight) => weight.all)];
   const primaryTargets = new Set(
     [resolved.primary, ...nestedFiles.map((weight) => weight.file)]
       .filter(Boolean)

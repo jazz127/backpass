@@ -646,7 +646,7 @@ export function buildProposal(rawResult, context) {
           .filter(Boolean)
           .map((sessionId) => ({ sessionId, quote: item.text })),
       );
-      const owner = rootOwnsGap(sightings, routing.rootOwnedGaps)
+      const owner = rootOwnsGap(sightings, routing.rootOwnedGaps ?? summary?.rootOwnedGaps)
         ? routing.rootPath
         : (routing.ownerOf(sessions) ?? routing.rootPath);
       const here = routing.weight ?? routing.rootPath;

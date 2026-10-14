@@ -150,3 +150,27 @@ test("fewer than two open gaps never spends a model call", async () => {
   const summary = await foldForRun(h.ctx, memoryFile, "h1", [], h.transcripts);
   assert.match(String(summary.consolidation.skipped), /fewer than two/);
 });
+
+test("consolidation sees fresh native contributions and counts related observers once", async () => {
+  const oldWording = "Read docs/db.md before writing queries.";
+  const freshWording = "Read docs/db.md before writing any production queries.";
+  const oldChild = record("C", oldWording);
+  Object.assign(oldChild.transcript, { contentSignature: "child-v1" });
+  oldChild.key = evidenceKey(oldChild.transcript, "h1");
+  const h = harness([oldChild], { merges: [] });
+  await foldForRun(h.ctx, memoryFile, "h1", [], [oldChild.transcript]);
+
+  const parent = record("P", freshWording);
+  const child = record("C", freshWording);
+  Object.assign(child.transcript, { contentSignature: "child-v2", corroborationIdentity: "P" });
+  child.key = evidenceKey(child.transcript, "h1");
+  const independent = record("X", freshWording);
+  const unrelated = record("Y", UNRELATED);
+  const records = [parent, child, independent, unrelated];
+  for (const evidence of records) h.state.writeEvidence(evidence.transcript.id, evidence);
+  await foldForRun(h.ctx, memoryFile, "h1", [], records.map((evidence) => evidence.transcript));
+
+  const prompt = fs.readFileSync(path.join(h.state.root, "prompts", "consolidate-gaps.md"), "utf8");
+  assert.ok(prompt.includes(`(sessions=2) ${freshWording}`));
+  assert.ok(!prompt.includes(oldWording));
+});

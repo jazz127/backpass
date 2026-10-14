@@ -38,7 +38,9 @@ let callCounter = 0;
 function renderEntries(entries) {
   return entries
     .map((entry) => {
-      const sessions = Object.keys(entry.sessions).length;
+      const sessions = new Set(
+        Object.entries(entry.sessions).map(([identity, observation]) => observation.observerId || identity),
+      ).size;
       const mistake = firstMistake(entry);
       return (
         `[${entry.id}] (sessions=${sessions}) ${entry.proposedInstruction}` +

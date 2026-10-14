@@ -179,6 +179,8 @@ export function foldEvidence(
         recurrenceRisk: gap.recurrenceRisk,
         source,
         sessionId: corroborationIdentity,
+        sourceSessionId: sessionIdentity,
+        sightingIds: [sessionIdentity],
         domain: gap.domain === "orchestration" ? "orchestration" : "project",
         project: record.transcript.project || null,
         projectRoot: record.transcript.projectRoot || null,
@@ -279,13 +281,17 @@ export function foldEvidence(
 
   const owners = route
     ? gapClusters.map((cluster, index) =>
-        allDecided[index].failedTriggerSkill ? null : route.ownerOf([...cluster.sessions]),
+        allDecided[index].failedTriggerSkill
+          ? null
+          : route.ownerOf(nativeGapSightings(cluster.items).map((item) => item.sessionId)),
       )
     : null;
   const routedGaps = [];
   const decided = route
     ? allDecided.filter((cluster, index) => {
-        const owner = rootOwnsGap(gapClusters[index].items, route.rootOwnedGaps) ? null : owners[index];
+        const owner = rootOwnsGap(nativeGapSightings(gapClusters[index].items), route.rootOwnedGaps)
+          ? null
+          : owners[index];
         if (owner === route.weight) return true;
         if (cluster.sessions >= minGapEvidence && !cluster.majorityOrchestration) {
           routedGaps.push({
@@ -366,10 +372,13 @@ export function foldEvidence(
     if (route.weight === null) {
       summary.rootOwnedGaps = gapClusters
         .filter((cluster, index) => owners[index] === null && cluster.sessions.size >= minGapEvidence)
-        .map((cluster) => cluster.items.map((item) => ({ sessionId: item.sessionId, quote: item.quote })));
+        .map((cluster) => nativeGapSightings(cluster.items));
     }
     summary.routedGaps = routedGaps;
-    summary.sourceSessions = sourceObservers;
+    summary.sourceSessions = sourceIdentitiesOf(issuedSources, [
+      ...usable.map((record) => [record.transcript.identity || record.transcript.id]),
+      ...persistedObservations.map((observation) => nativeSightingIds(observation)),
+    ]);
   }
   return summary;
 }
@@ -440,6 +449,7 @@ export function clusterGapObservations(observations, { checkProjectCoverage = fa
       recurrenceRisk: obs.recurrenceRisk,
       source: obs.source,
       sessionId: obs.sessionId,
+      sightings: nativeSightingIds(obs).map((sessionId) => ({ sessionId, quote: obs.quote })),
       domain: observationDomain(obs),
       project: obs.project || null,
       projectCovered,
@@ -449,6 +459,7 @@ export function clusterGapObservations(observations, { checkProjectCoverage = fa
     if (cluster) {
       const sessionItem = cluster.items.find((candidate) => candidate.sessionId === obs.sessionId);
       if (sessionItem) {
+        sessionItem.sightings.push(...item.sightings);
         if (obs.coveredBySkill) sessionItem.coveredBySkills.add(obs.coveredBySkill);
         if (observationDomain(obs) !== "orchestration") sessionItem.domain = "project";
         if (projectCovered) sessionItem.projectCovered = true;
@@ -553,14 +564,25 @@ function observationDomain(obs) {
   return obs?.domain === "orchestration" ? "orchestration" : "project";
 }
 
+function nativeSightingIds(observation) {
+  const identities = [
+    ...new Set([observation.sourceSessionId, ...(observation.sightingIds || [])].filter(Boolean)),
+  ];
+  return identities.length ? identities : [observation.sessionId];
+}
+
+function nativeGapSightings(items) {
+  return items.flatMap((item) => item.sightings);
+}
+
 function representativeGapItems(items, route) {
   const selected = items.slice(0, 6);
   if (!route || items.length <= 6) return selected;
-  const owner = route.ownerOf(items.map((item) => item.sessionId));
-  if (route.ownerOf(selected.map((item) => item.sessionId)) === owner) return selected;
+  const owner = route.ownerOf(nativeGapSightings(items).map((item) => item.sessionId));
+  if (route.ownerOf(nativeGapSightings(selected).map((item) => item.sessionId)) === owner) return selected;
   for (const item of items.slice(6)) {
     const candidate = [...selected.slice(0, -1), item];
-    if (route.ownerOf(candidate.map((entry) => entry.sessionId)) === owner) return candidate;
+    if (route.ownerOf(nativeGapSightings(candidate).map((entry) => entry.sessionId)) === owner) return candidate;
   }
   return selected;
 }

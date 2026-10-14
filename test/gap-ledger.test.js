@@ -55,6 +55,20 @@ function harness(overrides = {}) {
   return { root, state, ctx };
 }
 
+function combineLegacyObserver(ledger, observer, representative) {
+  for (const entry of Object.values(ledger.entries)) {
+    const prior = entry.sessions[observer];
+    const contribution = entry.sessions[representative];
+    entry.sessions[observer] = {
+      ...contribution,
+      firstObservedAt: prior.firstObservedAt,
+      sightingIds: [...new Set([...prior.sightingIds, ...contribution.sightingIds])],
+      phrasings: [...new Set([...prior.phrasings, ...contribution.phrasings])],
+    };
+    delete entry.sessions[representative];
+  }
+}
+
 /** One backpass run: the evidence files on disk at the time, then the fold. */
 async function run(h, records, file = memoryFile(), memoryHash = "h1") {
   for (const r of records) h.state.writeEvidence(r.transcript.id, r);
@@ -285,6 +299,7 @@ test("a selected representative cannot grant its former selected observer to one
       const h = harness({ gapLedgerMaxAge: "all" });
       const ledger = { version: 1, entries: {} };
       recordGapObservations(ledger, [native("P", "P", [GAP], "h1"), native("G", "P", [GAP], "h1")]);
+      combineLegacyObserver(ledger, "P", "G");
       const entryId = gapEntryId(MEMORY_PATH, GAP);
       const historical = structuredClone(ledger.entries[entryId].sessions.P);
       assert.equal(historical.sourceSessionId, "G");
@@ -369,6 +384,7 @@ test("an occupied incompatible observer preserves its native alias through norma
   recordGapObservations(ledger, [native("P", "P", [GAP]), native("G", "P", [GAP]), native("H", "H", [GAP])], {
     now: new Date("2026-08-02T00:00:00Z"),
   });
+  combineLegacyObserver(ledger, "P", "G");
   const entryId = gapEntryId(MEMORY_PATH, GAP);
   const historical = structuredClone(ledger.entries[entryId].sessions.P);
   const valid = structuredClone(ledger.entries[entryId].sessions.H);
@@ -468,6 +484,7 @@ test("selected native history corroborates separately from an incompatible occup
         [native("P", "P", [GAP], "h1"), native("G", "P", [GAP], "h1"), native("H", "H", [GAP], "h1")],
         { now: new Date("2026-08-02T00:00:00Z") },
       );
+      combineLegacyObserver(ledger, "P", "G");
       const entryId = gapEntryId(MEMORY_PATH, GAP);
       const historical = structuredClone(ledger.entries[entryId].sessions.P);
       const valid = structuredClone(ledger.entries[entryId].sessions.H);
@@ -547,6 +564,7 @@ test("fresh native evidence retains a deterministic sibling when its own observe
   };
   const ledger = { version: 1, entries: {} };
   recordGapObservations(ledger, [native("P", "P", [GAP], "h1"), native("G", "P", [GAP], "h1")]);
+  combineLegacyObserver(ledger, "P", "G");
   const entryId = gapEntryId(MEMORY_PATH, GAP);
   const historical = structuredClone(ledger.entries[entryId].sessions.P);
   h.state.writeGapLedger(ledger);
@@ -674,7 +692,7 @@ test("the same session is never double-counted across runs", async () => {
   assert.equal(entries.length, 1, "rephrasings of one gap share one ledger entry");
   assert.deepEqual(Object.keys(entries[0].sessions), ["claude-s1"]);
 });
-test("OMP parent and subagent persist one ledger sighting and keep it in the child sample", async () => {
+test("OMP parent and subagent persist native sightings with one vote in the child sample", async () => {
   const h = harness();
   const startedAt = Date.parse("2026-08-01T00:00:00Z");
   const parentPath = "/omp/sessions/-repo-demo/parent-session.jsonl";
@@ -727,7 +745,12 @@ test("OMP parent and subagent persist one ledger sighting and keep it in the chi
 
   const first = await run(h, [parentEvidence, childEvidence]);
   assert.equal(first.gaps.length, 0, "a parent plus its subagent remains one observer");
-  assert.deepEqual(Object.keys(Object.values(h.state.readGapLedger().entries)[0].sessions), [parentIdentity]);
+  assert.deepEqual(
+    Object.values(Object.values(h.state.readGapLedger().entries)[0].sessions)
+      .map((observation) => observation.sourceSessionId)
+      .sort(),
+    [parent.identity, child.identity].sort(),
+  );
 
   const childOnly = await foldForRun(h.ctx, memoryFile(), "h1", [], [child]);
   assert.equal(
@@ -837,7 +860,10 @@ test("native sightings union across recording, migration and consolidation with 
   const observations = ledgerGapObservations(ledger, MEMORY_PATH);
   const shared = observations.find((observation) => observation.sessionId === "observer-a");
   assert.equal(shared.sourceSessionId, "child-api");
-  assert.deepEqual(shared.sightingIds.sort(), ["child-api", "child-web"]);
+  assert.deepEqual(shared.sightingIds, ["child-api"]);
+  assert.deepEqual(observations.find((observation) => observation.sourceSessionId === "child-web").sightingIds, [
+    "child-web",
+  ]);
   assert.equal(shared.source, "pi · child-api · 2026-08-02");
   const attribution = new Map(
     records.map((record) => [
@@ -847,12 +873,12 @@ test("native sightings union across recording, migration and consolidation with 
   );
   const api = { path: "apps/api/AGENTS.md", dir: "apps/api" };
   const route = routingFor([api], attribution, MEMORY_PATH, null);
-  const summary = foldEvidence([], { minGapEvidence: 2, gapObservations: observations, route });
+  const summary = foldEvidence(records, { minGapEvidence: 2, gapObservations: observations, route });
   assert.equal(summary.gaps.length, 1);
   assert.equal(summary.gaps[0].sessions, 2);
   assert.equal(summary.sourceObservers[shared.source], "observer-a");
   assert.equal(
-    foldEvidence([], {
+    foldEvidence(records, {
       minGapEvidence: 2,
       gapObservations: observations,
       route: { ...route, weight: api.path },
@@ -864,7 +890,7 @@ test("native sightings union across recording, migration and consolidation with 
   const preserved = ledgerGapObservations(ledger, MEMORY_PATH);
   const prior = preserved.find((observation) => observation.sessionId === "observer-a");
   assert.deepEqual(prior, shared);
-  const fresh = preserved.find((observation) => observation.sessionId === "child-web");
+  const fresh = preserved.find((observation) => observation.sourceSessionId === "child-web");
   assert.equal(fresh.sourceSessionId, "child-web");
   assert.deepEqual(fresh.sightingIds, ["child-web"]);
   const refolded = foldEvidence(records, { minGapEvidence: 2, gapObservations: preserved, route });
@@ -940,9 +966,12 @@ test("an OMP parent and subagent sharing a root vote project in one run whatever
   const child = observe("pi-child", "orchestration");
   const domainAfter = (records, ledger = { version: 1, entries: {} }, now = new Date(startedAt + DAY)) => {
     recordGapObservations(ledger, records, { now, transcripts: [parent.transcript, child.transcript] });
-    const [entry] = Object.values(ledger.entries);
-    assert.deepEqual(Object.keys(entry.sessions), [rootIdentity]);
-    return { ledger, domain: entry.sessions[rootIdentity].domain };
+    const summary = foldEvidence(records, {
+      gapObservations: ledgerGapObservations(ledger, MEMORY_PATH),
+      minGapEvidence: 1,
+    });
+    assert.equal(summary.gaps[0].sessions, 1);
+    return { ledger, domain: summary.gaps[0].orchestrationSightings ? "orchestration" : "project" };
   };
 
   assert.equal(domainAfter([parent, child]).domain, "project");
@@ -951,8 +980,8 @@ test("an OMP parent and subagent sharing a root vote project in one run whatever
   const { ledger } = domainAfter([parent]);
   assert.equal(
     domainAfter([child], ledger, new Date(startedAt + 2 * DAY)).domain,
-    "orchestration",
-    "a later run still replaces the earlier vote",
+    "project",
+    "a later child observation cannot overwrite the parent's native project evidence",
   );
 });
 

@@ -27,6 +27,11 @@ function candidateFor(file) {
   return { key: file, path: file, mtimeMs: stat.mtimeMs, bytes: stat.size };
 }
 
+/** What `pi.enumerate` yields for a file in the opt-in OMP store (`subagent` for nested files). */
+function ompCandidateFor(file, { subagent = false } = {}) {
+  return { ...candidateFor(file), omp: true, subagent };
+}
+
 function messages(events) {
   return events.filter((e) => e.kind === "message");
 }
@@ -151,6 +156,142 @@ test("pi adapter reads the session header and drops thinking blocks", () => {
   assert.equal(toolCall.result, "nothing to commit");
 });
 
+test("pi adapter ignores an omp-style model field outside a title-led transcript", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-pi-model-"));
+  const file = path.join(dir, "plain.jsonl");
+  fs.writeFileSync(
+    file,
+    [
+      { type: "session", version: 3, id: "plain", timestamp: "2026-08-27T00:00:00.000Z", cwd: "/repo/demo" },
+      { type: "model_change", id: "m1", parentId: null, model: "cursor/composer-2.5" },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join("\n") + "\n",
+  );
+  assert.equal(pi.read({ path: file }).model, null);
+});
+
+test("pi adapter classifies omp sessions past the title record and reads model", () => {
+  const file = path.join(FIXTURES, "omp-session.jsonl");
+  const descriptor = pi.classify(ompCandidateFor(file));
+  assert.equal(descriptor.id, "omp-5678");
+  assert.equal(pi.classify(candidateFor(file)), null, "a plain Pi store never reads a title-led header");
+  assert.equal(descriptor.cwd, "/repo/demo");
+
+  const { events, model } = pi.read({ path: file });
+  assert.equal(model, "cursor/composer-2.5", "omp model_change carries model, not modelId");
+  const [toolCall] = tools(events);
+  assert.equal(toolCall.name, "bash");
+  assert.equal(toolCall.result, "nothing to commit");
+});
+test("pi adapter accepts only line one or line two after a title header", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-omp-header-"));
+  const title = JSON.stringify({ type: "title", v: 1, title: "" });
+  const session = JSON.stringify({ type: "session", version: 3, id: "late", cwd: "/repo/demo" });
+  const other = JSON.stringify({ type: "message", message: { role: "user", content: "hello" } });
+  const afterTitle = path.join(dir, "after-title.jsonl");
+  const afterOther = path.join(dir, "after-other.jsonl");
+
+  fs.writeFileSync(afterTitle, `${title}\n${other}\n${session}\n`);
+  fs.writeFileSync(afterOther, `${other}\n${session}\n`);
+
+  assert.equal(pi.classify(ompCandidateFor(afterTitle)), null, "line three is outside the header");
+  assert.equal(pi.classify(ompCandidateFor(afterOther)), null, "line two is a header only after a title record");
+});
+
+test("pi adapter links an OMP subagent to its sibling parent session", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-omp-parent-"));
+  const sessionDir = path.join(root, "-repo-demo");
+  const parentName = "2026-08-27T00-00-00.000Z_parent-folder";
+  const parentPath = path.join(sessionDir, `${parentName}.jsonl`);
+  const childPath = path.join(sessionDir, parentName, "Subagent.jsonl");
+  writeOmpSession(parentPath, { id: "parent-native", cwd: "/repo/demo" });
+  writeOmpSession(childPath, { id: "child-native", cwd: "/repo/demo" });
+
+  const child = pi.classify(ompCandidateFor(childPath, { subagent: true }));
+  assert.equal(child.parentSessionId, "parent-native");
+  assert.equal(child.parentSessionPath, parentPath);
+  assert.equal(child.parentSessionStartedAt, Date.parse("2026-08-27T00:00:00.000Z"));
+  assert.equal(pi.classify(ompCandidateFor(parentPath)).parentSessionId, undefined);
+});
+
+test("pi adapter links a second-level OMP subagent to the root session", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-omp-nested-"));
+  const sessionDir = path.join(root, "-repo-demo");
+  const parentName = "2026-08-27T00-00-00.000Z_parent-folder";
+  const parentPath = path.join(sessionDir, `${parentName}.jsonl`);
+  const childPath = path.join(sessionDir, parentName, "Subagent.jsonl");
+  const grandchildPath = path.join(sessionDir, parentName, "Subagent", "Subagent.Child.jsonl");
+  writeOmpSession(parentPath, { id: "parent-native", cwd: "/repo/demo" });
+  writeOmpSession(childPath, { id: "child-native", cwd: "/repo/demo" });
+  writeOmpSession(grandchildPath, { id: "grandchild-native", cwd: "/repo/demo" });
+
+  const grandchild = pi.classify(ompCandidateFor(grandchildPath, { subagent: true }));
+  assert.equal(grandchild.id, "grandchild-native");
+  assert.equal(grandchild.parentSessionId, "parent-native");
+  assert.equal(grandchild.parentSessionPath, parentPath);
+  assert.equal(grandchild.parentSessionStartedAt, Date.parse("2026-08-27T00:00:00.000Z"));
+});
+
+test("pi adapter links OMP subagents by nested path even when their cwd differs", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-omp-cwd-"));
+  const sessionDir = path.join(root, "-repo-demo");
+  const parentName = "2026-08-27T00-00-00.000Z_parent-folder";
+  const parentPath = path.join(sessionDir, `${parentName}.jsonl`);
+  const childPath = path.join(sessionDir, parentName, "Subagent.jsonl");
+  const grandchildPath = path.join(sessionDir, parentName, "Subagent", "Subagent.Child.jsonl");
+  writeOmpSession(parentPath, { id: "parent-native", cwd: "/repo/demo" });
+  writeOmpSession(childPath, { id: "child-native", cwd: "/repo/demo/packages/api" });
+  writeOmpSession(grandchildPath, { id: "grandchild-native", cwd: "/worktrees/demo-isolated" });
+
+  const child = pi.classify(ompCandidateFor(childPath, { subagent: true }));
+  assert.equal(child.cwd, "/repo/demo/packages/api", "association still uses the subagent's own cwd");
+  assert.equal(child.parentSessionId, "parent-native");
+  assert.equal(child.parentSessionPath, parentPath);
+
+  const grandchild = pi.classify(ompCandidateFor(grandchildPath, { subagent: true }));
+  assert.equal(grandchild.cwd, "/worktrees/demo-isolated");
+  assert.equal(grandchild.parentSessionId, "parent-native");
+  assert.equal(grandchild.parentSessionPath, parentPath);
+});
+
+test("pi discovery checks a missing parent path once per scan", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-pi-parent-cache-"));
+  const sessionDir = path.join(root, "sessions", "-repo-demo");
+  const firstPath = path.join(sessionDir, "missing-parent", "First.jsonl");
+  const secondPath = path.join(sessionDir, "missing-parent", "Second.jsonl");
+  writeOmpSession(firstPath, { id: "first", cwd: "/repo/demo" });
+  writeOmpSession(secondPath, { id: "second", cwd: "/repo/demo" });
+  const candidates = [ompCandidateFor(firstPath, { subagent: true }), ompCandidateFor(secondPath, { subagent: true })];
+  const missingParentPath = path.join(sessionDir, "missing-parent.jsonl");
+  const scanContext = pi.createScanContext();
+  const originalStatSync = fs.statSync;
+  let parentProbes = 0;
+
+  fs.statSync = function (file, ...args) {
+    if (file === missingParentPath) parentProbes += 1;
+    return originalStatSync.call(this, file, ...args);
+  };
+  try {
+    for (const candidate of candidates) {
+      const descriptor = pi.classify(candidate, { scanContext });
+      assert.equal(descriptor.parentSessionId, undefined);
+    }
+  } finally {
+    fs.statSync = originalStatSync;
+  }
+
+  assert.equal(parentProbes, 1, "subagents sharing a missing parent should look it up once per scan");
+});
+function writeOmpSession(file, { id, cwd }) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(
+    file,
+    `${JSON.stringify({ type: "title", v: 1, title: "", updatedAt: "2026-08-27T00:00:00.000Z", pad: "  " })}\n` +
+      `${JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-08-27T00:00:00.000Z", cwd })}\n`,
+  );
+}
+
 function writePiSession(file, { id, cwd }) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(
@@ -190,6 +331,119 @@ function withPiStoreEnv(
   }
 }
 
+test("pi nested layout signals subagents without readable ancestor headers", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-omp-missing-headers-"));
+  const sessionDir = path.join(homeDir, ".omp", "agent", "sessions", "-repo-demo");
+  const childPath = path.join(sessionDir, "root", "Subagent.jsonl");
+  const grandchildPath = path.join(sessionDir, "other-root", "Missing", "Missing.Child.jsonl");
+  writeOmpSession(childPath, { id: "child-native", cwd: "/repo/demo" });
+  writeOmpSession(grandchildPath, { id: "grandchild-native", cwd: "/repo/demo" });
+  fs.writeFileSync(path.join(sessionDir, "root.jsonl"), "not a session header\n");
+  const piPath = path.join(homeDir, ".pi", "agent", "sessions", "-repo-demo", "ordinary.jsonl");
+  const bridgeDir = path.join(homeDir, "bridge");
+  const bridgePath = path.join(bridgeDir, "ordinary.jsonl");
+  writePiSession(piPath, { id: "pi-native", cwd: "/repo/demo" });
+  writePiSession(bridgePath, { id: "bridge-native", cwd: "/repo/demo" });
+
+  withPiStoreEnv({ homeDir, bridgeDir }, () => {
+    const candidates = pi.enumerate({ config: { discovery: { includeOmp: true } } });
+    for (const file of [childPath, grandchildPath]) {
+      const descriptor = pi.classify(candidates.find((candidate) => candidate.path === file));
+      assert.equal(descriptor.interactionSignals.source, "subagent");
+      assert.equal(descriptor.parentSessionId, undefined);
+      assert.equal(descriptor.parentSessionPath, undefined);
+      assert.equal(descriptor.parentSessionStartedAt, undefined);
+    }
+    for (const file of [piPath, bridgePath]) {
+      const descriptor = pi.classify(candidates.find((candidate) => candidate.path === file));
+      assert.deepEqual(descriptor.interactionSignals, {});
+      assert.equal(descriptor.parentSessionId, undefined);
+    }
+  });
+});
+
+test("pi adapter keeps plain Pi stores one level deep and reads nested layout only in the opt-in OMP store", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-pi-depth-"));
+  const piAgentDir = path.join(homeDir, "pi-agent");
+  const stores = {
+    default: path.join(homeDir, ".pi", "agent", "sessions", "-repo-demo"),
+    custom: path.join(piAgentDir, "sessions", "-repo-demo"),
+    omp: path.join(homeDir, ".omp", "agent", "sessions", "-repo-demo"),
+  };
+  for (const [store, dir] of Object.entries(stores)) {
+    const writer = store === "omp" ? writeOmpSession : writePiSession;
+    writer(path.join(dir, "root.jsonl"), { id: `${store}-root`, cwd: "/repo/demo" });
+    writer(path.join(dir, "root", "Helper.jsonl"), { id: `${store}-helper`, cwd: "/repo/demo" });
+  }
+  writeOmpSession(path.join(stores.default, "titled.jsonl"), { id: "titled", cwd: "/repo/demo" });
+
+  withPiStoreEnv({ homeDir, piAgentDir }, () => {
+    for (const config of [undefined, { discovery: { includeOmp: false } }, { discovery: { includeOmp: true } }]) {
+      const candidates = pi.enumerate({ config });
+      for (const store of ["default", "custom"]) {
+        const files = candidates.filter((candidate) => candidate.path.startsWith(stores[store])).map((c) => c.path);
+        assert.ok(files.includes(path.join(stores[store], "root.jsonl")));
+        assert.ok(!files.includes(path.join(stores[store], "root", "Helper.jsonl")), `${store} store stays one level`);
+        for (const candidate of candidates.filter((c) => c.path.startsWith(stores[store]))) {
+          assert.equal(candidate.omp, false);
+          assert.equal(candidate.subagent, false);
+          const descriptor = pi.classify(candidate);
+          if (descriptor) {
+            assert.deepEqual(descriptor.interactionSignals, {});
+            assert.equal(descriptor.parentSessionId, undefined);
+            assert.equal(pi.cacheDependency(candidate), undefined);
+          }
+        }
+      }
+      const titled = candidates.find((candidate) => candidate.path === path.join(stores.default, "titled.jsonl"));
+      assert.equal(pi.classify(titled), null, "a title-led header is not read outside the OMP store");
+    }
+
+    const candidates = pi.enumerate({ config: { discovery: { includeOmp: true } } });
+    const helper = candidates.find((candidate) => candidate.path === path.join(stores.omp, "root", "Helper.jsonl"));
+    assert.ok(helper, "the OMP store is walked into subagent layout when enabled");
+    assert.equal(helper.omp, true);
+    assert.equal(helper.subagent, true);
+    const root = candidates.find((candidate) => candidate.path === path.join(stores.omp, "root.jsonl"));
+    assert.equal(root.omp, true);
+    assert.equal(root.subagent, false);
+    assert.equal(pi.classify(helper).parentSessionId, "omp-root");
+    assert.equal(
+      pi.enumerate({ config: { discovery: { includeOmp: false } } }).some((c) => c.path.startsWith(stores.omp)),
+      false,
+    );
+  });
+});
+
+test("pi adapter reads an OMP store reached through PI_CODING_AGENT_DIR only when includeOmp is on", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-pi-omp-env-"));
+  const piAgentDir = path.join(homeDir, ".omp", "agent");
+  const dir = path.join(piAgentDir, "sessions", "-repo-demo");
+  writeOmpSession(path.join(dir, "root.jsonl"), { id: "root", cwd: "/repo/demo" });
+  writeOmpSession(path.join(dir, "root", "Helper.jsonl"), { id: "helper", cwd: "/repo/demo" });
+
+  withPiStoreEnv({ homeDir, piAgentDir }, () => {
+    const off = pi.enumerate({ config: { discovery: { includeOmp: false } } });
+    assert.deepEqual(
+      off.map((candidate) => path.basename(candidate.path)),
+      ["root.jsonl"],
+      "without the setting only the top level is listed",
+    );
+    assert.equal(pi.classify(off[0]), null, "and its title-led header is not read");
+
+    const on = pi.enumerate({ config: { discovery: { includeOmp: true } } });
+    assert.deepEqual(on.map((candidate) => path.basename(candidate.path)).sort(), ["Helper.jsonl", "root.jsonl"]);
+    assert.equal(pi.classify(on.find((candidate) => candidate.subagent)).parentSessionId, "root");
+    const rootOn = on.find((candidate) => !candidate.subagent);
+    assert.equal(pi.classify(rootOn).id, "root");
+    assert.notEqual(
+      pi.cacheDependency(rootOn),
+      pi.cacheDependency(off[0]),
+      "switching the setting reclassifies a file cached while it read as null",
+    );
+  });
+});
+
 test("pi adapter enumerates standalone and BB-managed session roots without duplicates", () => {
   const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-pi-home-"));
   const piAgentDir = path.join(fakeHome, "pi-agent");
@@ -200,6 +454,27 @@ test("pi adapter enumerates standalone and BB-managed session roots without dupl
     id: "standalone",
     cwd: "/repo/demo",
   });
+  writeOmpSession(path.join(fakeHome, ".omp", "agent", "sessions", "-repo-demo", "omp-standalone.jsonl"), {
+    id: "omp-standalone",
+    cwd: "/repo/demo",
+  });
+  writeOmpSession(path.join(fakeHome, ".omp", "agent", "sessions", "-repo-demo", "omp-standalone", "Subagent.jsonl"), {
+    id: "omp-subagent",
+    cwd: "/repo/demo",
+  });
+  writeOmpSession(
+    path.join(
+      fakeHome,
+      ".omp",
+      "agent",
+      "sessions",
+      "-repo-demo",
+      "omp-standalone",
+      "Subagent",
+      "Subagent.Child.jsonl",
+    ),
+    { id: "omp-nested-subagent", cwd: "/repo/demo" },
+  );
   writePiSession(path.join(piAgentDir, "sessions", "-repo-demo", "custom-agent.jsonl"), {
     id: "custom-agent",
     cwd: "/repo/demo",
@@ -222,9 +497,26 @@ test("pi adapter enumerates standalone and BB-managed session roots without dupl
   });
 
   withPiStoreEnv({ homeDir: fakeHome, piAgentDir, piSessionDir, bbDataDir, bridgeDir }, () => {
+    for (const config of [undefined, { discovery: { includeOmp: false } }]) {
+      assert.deepEqual(
+        pi
+          .enumerate({ config })
+          .map((candidate) => path.basename(candidate.path))
+          .sort(),
+        [
+          "custom-agent.jsonl",
+          "custom-data.jsonl",
+          "custom-session.jsonl",
+          "default-bb.jsonl",
+          "direct-override.jsonl",
+          "standalone.jsonl",
+        ].sort(),
+        "OMP's default store is not read unless explicitly enabled",
+      );
+    }
     assert.deepEqual(
       pi
-        .enumerate()
+        .enumerate({ config: { discovery: { includeOmp: true } } })
         .map((candidate) => path.basename(candidate.path))
         .sort(),
       [
@@ -233,8 +525,11 @@ test("pi adapter enumerates standalone and BB-managed session roots without dupl
         "custom-session.jsonl",
         "default-bb.jsonl",
         "direct-override.jsonl",
+        "omp-standalone.jsonl",
         "standalone.jsonl",
-      ],
+        "Subagent.Child.jsonl",
+        "Subagent.jsonl",
+      ].sort(),
     );
   });
 

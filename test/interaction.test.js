@@ -25,6 +25,7 @@ import { foldForRun, printProposal } from "../src/commands/propose.js";
 import { cmdScan } from "../src/commands/scan.js";
 import { renderApplySurface } from "../src/apply/lavish.js";
 import { evidenceKey, State } from "../src/state.js";
+import { recordGapObservations } from "../src/gap-ledger.js";
 import { transcriptIdentity } from "../src/transcript.js";
 import { sampleTranscripts, capTranscripts } from "../src/sample.js";
 import { setLoggerSink } from "../src/logger.js";
@@ -268,6 +269,65 @@ test("scan prints the interactive/non-interactive mix through the CLI", () => {
   assert.match(human.stdout, /interactive 1 · non-interactive 2/);
 });
 
+test("scan --json on a plain Pi store ignores deeper files and carries no observer fields until includeOmp is set", () => {
+  const repo = initRepo();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-pi-plain-home-"));
+  const session = (id, title = false) =>
+    [
+      ...(title ? [{ type: "title", v: 1, title: "" }] : []),
+      { type: "session", version: 3, id, timestamp: "2026-08-20T10:00:00.000Z", cwd: repo },
+      {
+        type: "message",
+        id: "e1",
+        timestamp: "2026-08-20T10:00:01.000Z",
+        message: { role: "user", content: [{ type: "text", text: `Do the work ${id}` }] },
+      },
+    ].map((entry) => JSON.stringify(entry));
+  const write = (file, lines) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${lines.join("\n")}\n`);
+  };
+  const piDir = path.join(home, ".pi", "agent", "sessions", "-repo-demo");
+  write(path.join(piDir, "plain-root.jsonl"), session("plain-root"));
+  write(path.join(piDir, "plain-root", "Deeper.jsonl"), session("plain-deeper"));
+  write(path.join(piDir, "titled.jsonl"), session("plain-titled", true));
+  const ompDir = path.join(home, ".omp", "agent", "sessions", "-repo-demo");
+  write(path.join(ompDir, "omp-root.jsonl"), session("omp-root", true));
+  write(path.join(ompDir, "omp-root", "Helper.jsonl"), session("omp-helper", true));
+
+  const scan = () => {
+    const result = spawnSync(process.execPath, [CLI, "scan", "--harness", "pi", "--since", "all", "--json"], {
+      cwd: repo,
+      env: { ...process.env, HOME: home, USERPROFILE: home, NO_COLOR: "1" },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+
+  const plain = scan();
+  assert.deepEqual(
+    plain.transcripts.map((t) => [t.nativeId, t.interaction]),
+    [["plain-root", INTERACTIVE]],
+  );
+  assert.deepEqual(plain.mix, { interactive: 1, nonInteractive: 0, total: 1 });
+  for (const t of plain.transcripts) {
+    assert.deepEqual(t.interactionSignals, {});
+    for (const key of ["corroborationIdentity", "corroborationNativeId", "corroborationStartedAt"]) {
+      assert.equal(key in t, false, key);
+    }
+  }
+
+  fs.writeFileSync(path.join(repo, ".backpassrc.json"), JSON.stringify({ discovery: { includeOmp: true } }));
+  const opted = scan();
+  const byId = new Map(opted.transcripts.map((t) => [t.nativeId, t]));
+  assert.deepEqual([...byId.keys()].sort(), ["omp-helper", "omp-root", "plain-root"]);
+  assert.equal(byId.get("plain-root").interaction, INTERACTIVE);
+  assert.equal(byId.get("omp-root").interaction, INTERACTIVE);
+  assert.equal(byId.get("omp-helper").interaction, NON_INTERACTIVE);
+  assert.equal(byId.get("omp-helper").corroborationNativeId, "omp-root");
+});
+
 test("cmdScan includes the mix on the human table", async () => {
   const repo = initRepo();
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-mix-scan-"));
@@ -476,6 +536,44 @@ test("fold excludes legacy evidence without an interaction category", async () =
     [NON_INTERACTIVE]: 0,
   });
   assert.equal(state.readEvidence(transcript).transcript.interaction, undefined);
+});
+
+test("fold keeps legacy evidence excluded when current discovery stamps an interaction", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-mix-fold-current-"));
+  const state = new State(dir).ensure();
+  const transcript = {
+    harness: "codex",
+    id: "codex-legacy-current",
+    nativeId: "legacy-current",
+    path: "/sessions/legacy-current.jsonl",
+    mtimeMs: 100,
+    bytes: 200,
+    interaction: INTERACTIVE,
+  };
+  const memoryHash = "sha256:memory";
+  state.writeEvidence(transcript, {
+    status: "ok",
+    transcript: { harness: "codex", id: transcript.id, path: transcript.path },
+    memoryHash,
+    memoryPath: "AGENTS.md",
+    key: evidenceKey(transcript, memoryHash),
+    positive: [{ instruction: "AG-001", quote: "followed the repository rule exactly" }],
+    negative: [],
+    gaps: [],
+  });
+
+  const summary = await foldForRun(
+    {
+      repo: { root: dir },
+      config: { state, minGapEvidence: 2, gapLedgerMaxAge: "90d" },
+    },
+    { path: "AGENTS.md", text: "", units: [] },
+    memoryHash,
+    [],
+    [transcript],
+  );
+
+  assert.equal(summary.analyzedSessions, 0, "only analysis may backfill a stored interaction stamp");
 });
 
 test("fold selection distinguishes colliding native IDs by source", async () => {
@@ -747,6 +845,390 @@ test("evidence records carry the category and fold reports relevance per categor
     assert.match(renderEvidenceForPrompt(summary), /relevance=50\.0% \(interactive 100\.0% · non-interactive 0\.0%\)/);
   } finally {
     process.env.HOME = prevHome;
+  }
+});
+test("OMP subagents share their parent identity and refresh cached relations", async () => {
+  const repo = initRepo();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-omp-discovery-"));
+  const sessionRoot = path.join(home, ".omp", "agent", "sessions", "-repo-demo");
+  const parentName = "2026-08-27T00-00-00.000Z_parent-folder";
+  const parentPath = path.join(sessionRoot, `${parentName}.jsonl`);
+  const childPath = path.join(sessionRoot, parentName, "Subagent.jsonl");
+  const header = (id) => [
+    { type: "title", v: 1, title: "" },
+    { type: "session", version: 3, id, timestamp: "2026-08-27T00:00:00.000Z", cwd: repo },
+  ];
+  writeJsonl(parentPath, header("parent-native"));
+  writeJsonl(childPath, header("child-native"));
+
+  const prevHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    const config = loadConfig(repo, { discovery: { harnesses: ["pi"], since: "all", includeOmp: true } });
+    config.state = new State(repo).ensure();
+    const cache = config.state.readScanCache();
+    for (const candidate of pi.enumerate({ config })) {
+      const descriptor = pi.classify(candidate);
+      delete descriptor.parentSessionId;
+      delete descriptor.parentSessionPath;
+      delete descriptor.parentSessionStartedAt;
+      cache.entries[`pi:${candidate.key}`] = {
+        mtimeMs: candidate.mtimeMs,
+        bytes: candidate.bytes,
+        descriptor,
+      };
+    }
+    config.state.writeScanCache(cache);
+
+    const repository = { name: "demo", root: repo, worktrees: [repo], remotes: [] };
+    const first = await discoverTranscripts({ repo: repository, config });
+    assert.equal(first.perHarness.pi.cached, 0, "the pre-relation cache must be reclassified");
+    const parent = first.transcripts.find((transcript) => transcript.nativeId === "parent-native");
+    const child = first.transcripts.find((transcript) => transcript.nativeId === "child-native");
+    assert.ok(parent && child);
+    assert.notEqual(parent.identity, child.identity, "the two files remain separately analyzable");
+    assert.equal(parent.corroborationIdentity, parent.identity);
+    assert.equal(child.corroborationIdentity, parent.identity);
+    assert.equal(parent.interaction, INTERACTIVE);
+    assert.equal(child.interaction, NON_INTERACTIVE);
+
+    const second = await discoverTranscripts({ repo: repository, config });
+    assert.equal(second.perHarness.pi.cached, 2, "the refreshed relation is safe to reuse");
+    assert.equal(
+      second.transcripts.find((transcript) => transcript.nativeId === "child-native").corroborationIdentity,
+      parent.identity,
+    );
+    config.discovery.includeOmp = false;
+    const disabled = await discoverTranscripts({ repo: repository, config });
+    assert.deepEqual(disabled.transcripts, [], "opting out must not replay cached OMP descriptors");
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+  }
+});
+
+test("Pi child cache is invalidated when its parent session appears", async () => {
+  const repo = initRepo();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-omp-parent-cache-"));
+  const sessionRoot = path.join(home, ".omp", "agent", "sessions", "-repo-demo");
+  const parentName = "2026-08-27T00-00-00.000Z_parent-folder";
+  const parentPath = path.join(sessionRoot, `${parentName}.jsonl`);
+  const childPath = path.join(sessionRoot, parentName, "Subagent.jsonl");
+  const header = (id) => [
+    { type: "title", v: 1, title: "" },
+    { type: "session", version: 3, id, timestamp: "2026-08-27T00:00:00.000Z", cwd: repo },
+  ];
+  writeJsonl(childPath, header("child-native"));
+
+  const prevHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    const config = loadConfig(repo, { discovery: { harnesses: ["pi"], since: "all", includeOmp: true } });
+    config.state = new State(repo).ensure();
+    const repository = { name: "demo", root: repo, worktrees: [repo], remotes: [] };
+
+    const first = await discoverTranscripts({ repo: repository, config });
+    const childBeforeParent = first.transcripts.find((transcript) => transcript.nativeId === "child-native");
+    assert.ok(childBeforeParent);
+    assert.equal(childBeforeParent.parentSessionId, undefined);
+    assert.equal(childBeforeParent.interaction, NON_INTERACTIVE);
+    assert.equal(childBeforeParent.corroborationIdentity, childBeforeParent.identity);
+    const cachedMissingParent = await discoverTranscripts({ repo: repository, config });
+    assert.equal(cachedMissingParent.perHarness.pi.cached, 1);
+    assert.equal(cachedMissingParent.transcripts[0].interaction, NON_INTERACTIVE);
+
+    writeJsonl(parentPath, header("parent-native"));
+    const second = await discoverTranscripts({ repo: repository, config });
+    const parent = second.transcripts.find((transcript) => transcript.nativeId === "parent-native");
+    const child = second.transcripts.find((transcript) => transcript.nativeId === "child-native");
+
+    assert.ok(parent && child);
+    assert.equal(child.parentSessionId, "parent-native");
+    assert.equal(child.corroborationIdentity, parent.identity);
+    assert.equal(second.perHarness.pi.cached, 0, "the child descriptor must be reclassified after its parent appears");
+
+    const third = await discoverTranscripts({ repo: repository, config });
+    assert.equal(third.perHarness.pi.cached, 2, "the refreshed parent relation is safe to reuse");
+    assert.equal(
+      third.transcripts.find((transcript) => transcript.nativeId === "child-native").corroborationIdentity,
+      parent.identity,
+    );
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+  }
+});
+
+test("nested OMP automation stays non-interactive with unreadable ancestors and refreshes legacy caches", async () => {
+  const repo = initRepo();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-omp-unreadable-"));
+  const sessionRoot = path.join(home, ".omp", "agent", "sessions", "-repo-demo");
+  const childPath = path.join(sessionRoot, "root", "Subagent.jsonl");
+  const grandchildPath = path.join(sessionRoot, "other-root", "Missing", "Missing.Child.jsonl");
+  const header = (id) => [
+    { type: "title", v: 1, title: "" },
+    { type: "session", version: 3, id, timestamp: "2026-08-27T00:00:00.000Z", cwd: repo },
+  ];
+  writeJsonl(childPath, header("child-native"));
+  writeJsonl(grandchildPath, header("grandchild-native"));
+  writeJsonl(path.join(sessionRoot, "root.jsonl"), [{ type: "title", title: "unreadable header" }]);
+  const prevHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    const config = loadConfig(repo, { discovery: { harnesses: ["pi"], since: "all", includeOmp: true } });
+    config.state = new State(repo).ensure();
+    const cache = config.state.readScanCache();
+    for (const candidate of pi.enumerate({ config })) {
+      const descriptor = pi.classify(candidate);
+      if (descriptor) descriptor.interactionSignals = {};
+      cache.entries[`pi:${candidate.key}`] = { mtimeMs: candidate.mtimeMs, bytes: candidate.bytes, descriptor };
+    }
+    config.state.writeScanCache(cache);
+    const repository = { name: "demo", root: repo, worktrees: [repo], remotes: [] };
+    const first = await discoverTranscripts({ repo: repository, config });
+    assert.equal(first.perHarness.pi.cached, 0);
+    assert.equal(first.transcripts.length, 2);
+    for (const transcript of first.transcripts) {
+      assert.equal(transcript.interaction, NON_INTERACTIVE);
+      assert.equal(classifyInteraction({ ...transcript, interaction: INTERACTIVE }), NON_INTERACTIVE);
+      assert.equal(transcript.parentSessionId, undefined);
+      assert.equal(transcript.corroborationIdentity, transcript.identity);
+      assert.equal(transcript.corroborationNativeId, transcript.nativeId);
+      assert.equal(transcript.corroborationStartedAt, transcript.startedAt);
+    }
+    const second = await discoverTranscripts({ repo: repository, config });
+    assert.equal(second.perHarness.pi.cached, 3);
+    assert.ok(second.transcripts.every((transcript) => transcript.interaction === NON_INTERACTIVE));
+
+    const memoryHash = "sha256:memory";
+    for (const transcript of second.transcripts) {
+      config.state.writeEvidence(transcript, {
+        status: "ok",
+        transcript: { ...transcript, interaction: INTERACTIVE },
+        memoryHash,
+        memoryPath: "AGENTS.md",
+        key: evidenceKey(transcript, memoryHash),
+        positive: [],
+        negative: [],
+        gaps: [],
+      });
+    }
+    const summary = await analyzeTranscripts({
+      transcripts: second.transcripts,
+      memoryFile: { path: "AGENTS.md" },
+      config: { ...config, agents: { resolve: () => assert.fail("fresh evidence must not invoke an agent") } },
+      repo: repository,
+      memoryHash,
+    });
+    assert.deepEqual([summary.cached, summary.analyzed], [2, 0]);
+    const evidence = config.state.listEvidence();
+    assert.ok(evidence.every((record) => record.transcript.interaction === NON_INTERACTIVE));
+    assert.ok(evidence.every((record) => record.transcript.parentSessionId === null));
+    assert.deepEqual(foldEvidence(evidence).analyzedByInteraction, { [INTERACTIVE]: 0, [NON_INTERACTIVE]: 2 });
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+  }
+});
+
+test("standalone fold refreshes stale OMP interaction categories with unreadable ancestors", async () => {
+  const repo = initRepo();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-omp-fold-interaction-"));
+  const sessionRoot = path.join(home, ".omp", "agent", "sessions", "-repo-demo");
+  const header = (id) => [
+    { type: "title", v: 1, title: "" },
+    { type: "session", version: 3, id, timestamp: "2026-08-27T00:00:00.000Z", cwd: repo },
+  ];
+  writeJsonl(path.join(sessionRoot, "root.jsonl"), [{ type: "title", title: "unreadable header" }]);
+  writeJsonl(path.join(sessionRoot, "root", "Subagent.jsonl"), header("child-native"));
+  writeJsonl(path.join(sessionRoot, "other-root", "Missing", "Missing.Child.jsonl"), header("grandchild-native"));
+  writeJsonl(path.join(sessionRoot, "human.jsonl"), header("human-native"));
+  const prevHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    const config = loadConfig(repo, { discovery: { harnesses: ["pi"], since: "all", includeOmp: true } });
+    config.state = new State(repo).ensure();
+    const repository = { name: "demo", root: repo, worktrees: [repo], remotes: [] };
+    const { transcripts } = await discoverTranscripts({ repo: repository, config });
+    assert.equal(transcripts.length, 3);
+    for (const transcript of transcripts) {
+      assert.equal(transcript.parentSessionId, undefined);
+      const human = transcript.nativeId === "human-native";
+      assert.equal(transcript.interaction, human ? INTERACTIVE : NON_INTERACTIVE);
+      config.state.writeEvidence(transcript, {
+        status: "ok",
+        transcript: { ...transcript, interactionSignals: {}, interaction: human ? NON_INTERACTIVE : INTERACTIVE },
+        memoryHash: "sha256:memory",
+        memoryPath: "AGENTS.md",
+        key: evidenceKey(transcript, "sha256:memory"),
+        positive: human ? [{ instruction: "AG-001", quote: "kept the PR small" }] : [],
+        negative: human ? [] : [{ instruction: "AG-002", quote: "made the PR too large", class: "harm" }],
+        gaps: [],
+      });
+    }
+
+    for (const staleDiscoveryStamp of [false, true]) {
+      const selected = transcripts.map((transcript) => ({
+        ...transcript,
+        interaction: staleDiscoveryStamp ? INTERACTIVE : transcript.interaction,
+      }));
+      const summary = await foldForRun(
+        { repo: repository, config },
+        { path: "AGENTS.md", text: "", units: [] },
+        "sha256:memory",
+        [],
+        selected,
+      );
+      assert.equal(summary.analyzedSessions, 3);
+      assert.deepEqual(summary.analyzedByInteraction, { [INTERACTIVE]: 1, [NON_INTERACTIVE]: 2 });
+      assert.deepEqual(summary.instructions.find((row) => row.instruction === "AG-001").relevanceByInteraction, {
+        [INTERACTIVE]: 1,
+        [NON_INTERACTIVE]: 0,
+      });
+      assert.deepEqual(summary.instructions.find((row) => row.instruction === "AG-002").relevanceByInteraction, {
+        [INTERACTIVE]: 0,
+        [NON_INTERACTIVE]: 1,
+      });
+    }
+    assert.equal(
+      config.state.listEvidence().find((record) => record.transcript.nativeId === "child-native").transcript
+        .interaction,
+      INTERACTIVE,
+    );
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("nested OMP subagents share the root identity once the root session appears", async () => {
+  const repo = initRepo();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-omp-nested-discovery-"));
+  const sessionRoot = path.join(home, ".omp", "agent", "sessions", "-repo-demo");
+  const rootName = "2026-08-27T00-00-00.000Z_root-folder";
+  const rootPath = path.join(sessionRoot, `${rootName}.jsonl`);
+  const childPath = path.join(sessionRoot, rootName, "Subagent.jsonl");
+  const grandchildPath = path.join(sessionRoot, rootName, "Subagent", "Subagent.Child.jsonl");
+  const header = (id, timestamp) => [
+    { type: "title", v: 1, title: "" },
+    { type: "session", version: 3, id, timestamp, cwd: repo },
+  ];
+  writeJsonl(childPath, header("child-native", "2026-08-27T00:01:00.000Z"));
+  writeJsonl(grandchildPath, header("grandchild-native", "2026-08-27T00:02:00.000Z"));
+
+  const prevHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    const config = loadConfig(repo, { discovery: { harnesses: ["pi"], since: "all", includeOmp: true } });
+    config.state = new State(repo).ensure();
+    config.gapLedgerMaxAge = "all";
+    const repository = { name: "demo", root: repo, worktrees: [repo], remotes: [] };
+    const byNativeId = (result, nativeId) => result.transcripts.find((transcript) => transcript.nativeId === nativeId);
+
+    const first = await discoverTranscripts({ repo: repository, config });
+    assert.equal(byNativeId(first, "child-native").parentSessionId, undefined);
+    assert.equal(byNativeId(first, "grandchild-native").parentSessionId, "child-native");
+
+    writeJsonl(rootPath, header("root-native", "2026-08-27T00:00:00.000Z"));
+    const second = await discoverTranscripts({ repo: repository, config });
+    assert.equal(second.perHarness.pi.cached, 0, "both descendants must be reclassified when the root appears");
+    const root = byNativeId(second, "root-native");
+    const child = byNativeId(second, "child-native");
+    const grandchild = byNativeId(second, "grandchild-native");
+    assert.ok(root && child && grandchild);
+    assert.equal(new Set([root.identity, child.identity, grandchild.identity]).size, 3, "each file stays analyzable");
+    for (const descendant of [child, grandchild]) {
+      assert.equal(descendant.parentSessionId, "root-native");
+      assert.equal(descendant.corroborationIdentity, root.identity);
+      assert.equal(descendant.corroborationNativeId, "root-native");
+      assert.equal(descendant.corroborationStartedAt, root.startedAt);
+      assert.equal(descendant.interaction, NON_INTERACTIVE);
+    }
+    assert.equal(root.corroborationIdentity, root.identity);
+    assert.equal(root.interaction, INTERACTIVE);
+
+    const third = await discoverTranscripts({ repo: repository, config });
+    assert.equal(third.perHarness.pi.cached, 3, "the refreshed relations are safe to reuse");
+    assert.equal(byNativeId(third, "grandchild-native").corroborationIdentity, root.identity);
+
+    const perFile = (transcript) => ({
+      status: "ok",
+      memoryPath: "AGENTS.md",
+      memoryHash: "sha256:memory",
+      transcript: { ...transcript, parentSessionId: null, corroborationIdentity: null, corroborationNativeId: null },
+      gaps: [
+        {
+          proposedInstruction: "Read docs/db.md before writing queries.",
+          mistake: "re-derived it",
+          quote: "quote",
+          recurrenceRisk: "high",
+        },
+      ],
+    });
+    const ledger = { version: 1, entries: {} };
+    recordGapObservations(ledger, [perFile(child), perFile(grandchild)]);
+    config.state.writeGapLedger(ledger);
+
+    const summary = await foldForRun(
+      { repo: { root: repo }, config },
+      { path: "AGENTS.md", text: "", units: [] },
+      "sha256:memory",
+      [],
+      [child, grandchild],
+    );
+    assert.equal(summary.gaps.length, 0, "per-file sightings of one root session are one observer");
+    const [entry] = Object.values(config.state.readGapLedger().entries);
+    assert.deepEqual(Object.keys(entry.sessions), [root.identity]);
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+  }
+});
+
+test("OMP subagents running in another repo cwd still share the root identity", async () => {
+  const repo = initRepo();
+  const subdir = path.join(repo, "packages", "api");
+  fs.mkdirSync(subdir, { recursive: true });
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-omp-cwd-discovery-"));
+  const sessionRoot = path.join(home, ".omp", "agent", "sessions", "-repo-demo");
+  const rootName = "2026-08-27T00-00-00.000Z_root-folder";
+  const rootPath = path.join(sessionRoot, `${rootName}.jsonl`);
+  const childPath = path.join(sessionRoot, rootName, "Subagent.jsonl");
+  const grandchildPath = path.join(sessionRoot, rootName, "Subagent", "Subagent.Child.jsonl");
+  const header = (id, cwd) => [
+    { type: "title", v: 1, title: "" },
+    { type: "session", version: 3, id, timestamp: "2026-08-27T00:00:00.000Z", cwd },
+  ];
+  writeJsonl(rootPath, header("root-native", repo));
+  writeJsonl(childPath, header("child-native", subdir));
+  writeJsonl(grandchildPath, header("grandchild-native", subdir));
+
+  const prevHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    const config = loadConfig(repo, { discovery: { harnesses: ["pi"], since: "all", includeOmp: true } });
+    config.state = new State(repo).ensure();
+    const repository = { name: "demo", root: repo, worktrees: [repo], remotes: [] };
+    const result = await discoverTranscripts({ repo: repository, config });
+    const byNativeId = (nativeId) => result.transcripts.find((transcript) => transcript.nativeId === nativeId);
+    const root = byNativeId("root-native");
+    const child = byNativeId("child-native");
+    const grandchild = byNativeId("grandchild-native");
+
+    assert.ok(root && child && grandchild, "a subagent in a repo subdirectory still maps to this repository");
+    assert.equal(child.cwd, subdir);
+    for (const descendant of [child, grandchild]) {
+      assert.equal(descendant.parentSessionId, "root-native");
+      assert.equal(descendant.corroborationIdentity, root.identity);
+      assert.equal(descendant.corroborationNativeId, "root-native");
+      assert.equal(descendant.interaction, NON_INTERACTIVE);
+    }
+    assert.equal(root.interaction, INTERACTIVE);
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
   }
 });
 

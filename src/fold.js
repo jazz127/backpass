@@ -28,14 +28,14 @@ import { corroborationIdentityOf } from "./transcript.js";
  *     non-interactive so a robot-heavy corpus cannot hide that an instruction only
  *     fired in one category. That ratio is what decides memory-file vs skill
  *     placement in section 7.
- *  2. Near-duplicate gaps from different sessions are clustered, so "three sessions
- *     re-derived the db schema" arrives as one item with three quotes. Judged identity
+ *  2. Near-duplicate gaps are clustered with observer counts for corroboration, while
+ *     native transcript identities retain ownership and project coverage. Judged identity
  *     happens upstream (analysis citations and the consolidation pass reshape the
  *     ledger); the clustering here stays deterministic. Cluster domain is decided after
  *     grouping by `clusterDomainVote`.
  *  3. Gap clusters below `minGapEvidence` are ineligible for synthesis. Mixed-domain
  *     clusters remain visible as report-only diagnostics; other under-floor clusters are
- *     dropped. Batch size > 1 means one bad session never rewrites the weights. Sessions
+ *     dropped. Batch size > 1 means one bad session never rewrites the weights. Observers
  *     are counted across runs, not per run: when the caller passes `gapObservations` (the
  *     pruned gap ledger, `src/gap-ledger.js`) the clusters are built from those instead of
  *     this run's records, so a gap seen once now and once on a later run graduates. Without
@@ -440,10 +440,10 @@ function oversizedRestructureTargets(memoryFile, nonComplianceSessions, minGapEv
 }
 
 /**
- * Greedy similarity clustering over gap observations. A cluster counts each session once
- * no matter how many observations it contributed (re-analysis, duplicate reports).
- * A user-scope sighting the session's own project memory already covers is recorded but
- * does not count toward `sessions` or `projects`.
+ * Greedy similarity clustering over gap observations. Eligible native contributions retain
+ * their projects and maximum risk, but each corroborating observer counts once in `sessions`.
+ * A user-scope sighting its own project memory already covers is recorded but does not count
+ * toward `sessions` or `projects`; uncovered relatives remain eligible.
  */
 export function clusterGapObservations(observations, { checkProjectCoverage = false } = {}) {
   const clusters = [];
@@ -584,9 +584,7 @@ function observationDomain(obs) {
 }
 
 function nativeSightingIds(observation) {
-  const identities = [
-    ...new Set([observation.sourceSessionId, ...(observation.sightingIds || [])].filter(Boolean)),
-  ];
+  const identities = [...new Set([observation.sourceSessionId, ...(observation.sightingIds || [])].filter(Boolean))];
   return identities.length ? identities : [observation.sessionId];
 }
 
@@ -616,7 +614,8 @@ function representativeGapItems(items, route, minGapEvidence, minGapProjects) {
     const candidate = [...selected.slice(0, -1), item];
     if (route.ownerOf(nativeGapSightings(candidate).map((entry) => entry.sessionId)) === owner) {
       const losesObserver =
-        new Set(candidate.map((entry) => entry.sessionId)).size < new Set(selected.map((entry) => entry.sessionId)).size;
+        new Set(candidate.map((entry) => entry.sessionId)).size <
+        new Set(selected.map((entry) => entry.sessionId)).size;
       const losesProject =
         new Set(candidate.map((entry) => entry.project).filter(Boolean)).size <
         new Set(selected.map((entry) => entry.project).filter(Boolean)).size;
@@ -644,7 +643,6 @@ function clusterDomainVote(items) {
     majorityOrchestration: sightings > 0 && orchestrationSightings * 2 > sightings,
   };
 }
-
 
 /**
  * The failed-trigger reading of a cluster: which existing skill the analyses judged to

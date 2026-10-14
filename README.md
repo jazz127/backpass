@@ -36,8 +36,8 @@ memory file and project skills - under a token budget, gated by you.
   machines except into an agent you already authenticated, and obvious secrets are redacted
   before they do.
 - **Evidence-gated** - Every proposed edit carries verbatim quotes from real sessions,
-  and every `add`, `rewrite`, or `remove` edit needs evidence from at least two distinct
-  sessions. Small, noisy, bounded steps - not a rewrite.
+  subject to the [corroboration and harm floors](#5-gradient-descent---native-edits).
+  Small, noisy, bounded steps - not a rewrite.
 - **Human in the loop** - Analysis never writes.
   See [Apply - the human gate](#8-apply---the-human-gate) for review and explicit scripted decisions.
 
@@ -270,8 +270,9 @@ OMP (Oh My Pi) collection is **off by default**. Set `discovery.includeOmp` to `
 Then run `backpass scan --harness pi` (or a normal `backpass` run). The setting also
 applies to configured SSH hosts. For `--scope user`, set it in `user.discovery` and
 include `"pi"` in `user.discovery.harnesses`; user scope otherwise collects only Claude
-and Codex. Explicit Pi store environment overrides still work without this setting;
-it controls only the additional default OMP store, not the harness backpass invokes.
+and Codex. Explicit Pi store environment overrides still work without this setting.
+It enables the additional default OMP store and its title/nested handling, not the
+harness backpass invokes.
 Without it, nothing OMP-specific is read: Pi stores (including `PI_CODING_AGENT_DIR`
 and bridge directories) are listed one level deep and need a `session` header on line 1,
 exactly as before.
@@ -279,9 +280,9 @@ exactly as before.
 OMP nests subagent JSONL files below each parent session, and a subagent's own subagents
 one level further down. Only the OMP store, with the setting on, is walked that deep and
 may open with a `title` record; a `PI_CODING_AGENT_DIR` that points at the same directory
-is treated as that store. Backpass analyzes each file separately. With a readable root header, the session and its
-descendants share one corroborating observer, including across synced SSH stores. If the
-root is unreadable, the highest readable ancestor is used; without one, the file retains
+is treated as that store. Backpass analyzes each file separately. With a readable root
+header, the session and its descendants share one corroborating observer, including across
+synced SSH stores. If the root is unreadable, the highest readable ancestor is used; without one, the file retains
 its own observer identity. Matching descendant copies link their families without merging
 distinct roots on the same host that share a native ID.
 
@@ -503,8 +504,8 @@ select and refresh it.
 
 Gap sightings persist across runs in `.backpass/gap-ledger.json`; identity and provenance
 rules live in [`src/gap-ledger.js`](src/gap-ledger.js). A run only counts observations
-admitted under observers in its selected sample. This prevents older observations outside
-the cap from undoing the sample mix while allowing corroboration across runs. Each observer
+admitted under observers in its selected sample. Observers outside the cap cannot undo
+the sample mix, while selected observers can corroborate across runs. Each observer
 counts once per gap, a sighting retires once the memory file or a project skill covers it, and a session's
 sightings expire after `gapLedgerMaxAge` (default 90d). Until a gap corroborates it stays out
 of the proposal entirely.
@@ -532,7 +533,8 @@ Then mechanical gates run, and they are not negotiable:
 - every edit that changes the always-loaded surface - adding, rewriting or removing text -
   needs quotes from `minGapEvidence` distinct corroborating observers (default 2). The
   count is measured from the edit's own quote sources: only labels issued by this run's
-  fold count, and related transcripts share the observer described under [collection](#how-it-works).
+  fold count, and related transcripts share the observer described under
+  [collection](#1-collect-samples---which-sessions-belong-to-this-repo).
   A mistyped or invented label does not create another observer; model-reported counts
   are ignored. Rewrites are not
   classified by shape: a one-session tightening is refused along with a one-session
@@ -630,7 +632,7 @@ Skill descriptions are weights too. If the evidence shows an agent lacked knowle
 skill already contains, that is a _failed trigger_ - backpass proposes a description edit,
 not duplicate content. Failed triggers are counted, not guessed: the analysis stage sees
 every skill's name and trigger line, stamps a gap it judges covered by an existing skill
-with `coveredBySkill`, and the gap ledger corroborates those citations across sessions
+with `coveredBySkill`, and the gap ledger corroborates those citations across observers
 before synthesis is told to fix the trigger. The same coverage check retires a ledger gap
 once a skill's content answers it, so a gap resolved by extraction stops resurfacing.
 
@@ -658,8 +660,8 @@ a headless box or `--no-open` just hands you the link.
 There is no DEFER button, and it isn't missing: **rejections are remembered.** A rejected
 add, rewrite, or remove stays rejected while a later proposal of the same kind against the
 same file cites the same gap or touches the same instruction, even if the wording changed,
-until a later run has strictly more sessions behind it. Extract and move still match on the
-hunk bytes. The browser surface can attach an optional reason (`wrong-evidence`,
+until a later run has strictly more corroborating observers behind it. Extract and move
+still match on the hunk bytes. The browser surface can attach an optional reason (`wrong-evidence`,
 `already-covered`, `too-narrow`, `too-broad`, `disagree`); `--no-ui` records the rejection
 without asking for one.
 
@@ -768,8 +770,9 @@ weight of its own; a missing file is reported, never created:
   into one.
 - **One review.** The proposal and `backpass apply` cover every file, each edit labeled
   with its file and each nested file with its own budget. Apply refuses a saved nested
-  edit if that file is no longer named in the current config. The two-session evidence
-  floor, remembered rejections, and `apply` as the only writer are unchanged.
+  edit if that file is no longer named in the current config. The
+  [evidence floors](#5-gradient-descent---native-edits), remembered rejections, and
+  `apply` as the only writer are unchanged.
 
 Each nested directory keeps the pointer model above: name its canonical file, and a
 sibling `AGENTS.md` or `CLAUDE.md` that only imports it needs nothing, while a sibling
@@ -991,7 +994,7 @@ For the user-scope state location and isolation contract, see
 
 - **Causal attribution is genuinely hard.** A model can confabulate influence. The
   mitigations are structural - mandatory verbatim quotes checked against the trace they
-  claim to come from, the two-session rule, negative
+  claim to come from, the [corroboration floor](#5-gradient-descent---native-edits), negative
   evidence weighted highest, and a human gate - but read the evidence, not just the title.
 - **Transcript formats are undocumented** and can change without notice. Each adapter is
   pinned by a golden fixture and fails soft.

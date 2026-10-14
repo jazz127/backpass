@@ -35,7 +35,7 @@ Each owning file's comments and tests hold the detail; read them before touching
   `src/proposal.js`; usage comes from acpx's stderr line or a harness store (`src/acpx.js`), printed only by
   `src/commands/usage.js`.
 - **Evidence floors live in `buildProposal`** (`src/proposal.js`): every non-`extract`/`move` edit needs
-  `minGapEvidence` distinct sessions from `summary.sources`; deletions need `harm`-class sessions; a pure
+  `minGapEvidence` distinct observers from fold-issued sources; deletions need `harm`-class observers; a pure
   deletion inside a skill file is refused. Extraction and deletion never share one decision. Never add a
   lexical or text-shape classifier to these gates, and non-compliance never counts as harm. The >= 20%
   relevance placement table (`src/prompts/synthesis.md`) stays prompt guidance, never a `buildProposal` gate.
@@ -47,7 +47,7 @@ Each owning file's comments and tests hold the detail; read them before touching
 - **Corpus mix is interactive vs non-interactive, never an unknown bucket** (`src/interaction.js`).
 - **backpass must never analyze itself**: keep `SELF_SESSION_SENTINEL` (`src/prompts.js`) at the start of every
   model-facing prompt (`src/discovery/self.js` drops those sessions).
-- **Gap evidence**: one ledger sighting per (gap, transcript) (`src/gap-ledger.js`); record before pruning;
+- **Gap evidence**: native ledger contributions retain their own provenance (`src/gap-ledger.js`); record before pruning;
   never surface uncorroborated singletons; gap identity is judged by the consolidation call, with bigram
   similarity only as fallback; there is no orchestrator-memory write path.
 - **Fold uses only selected, fresh evidence** (`foldForRun` in `src/commands/propose.js`, `isEvidenceFresh`).
@@ -80,7 +80,7 @@ Each owning file's comments and tests hold the detail; read them before touching
 - **The live TUI is an enhancement layer** (`src/tui/`): output must be identical with it inactive (non-TTY, CI,
   `NO_COLOR`, `--quiet`, `--json`), with clean stdout.
 - **Rejection identity** (`src/state.js`): a refused add/rewrite/remove stays suppressed on the same kind and file
-  when measured `gapIds` or `instructionIds` overlap, until a strictly higher session count; extract/move stay
+  when measured `gapIds` or `instructionIds` overlap, until a strictly higher observer count; extract/move stay
   hunk-key only. Optional reject reasons never revive an edit and are not evidence floors.
 - Cursor IDE support is deferred; see the header of `src/discovery/adapters/cursor-ide.js`.
 

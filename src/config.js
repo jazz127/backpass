@@ -69,8 +69,8 @@ export const DEFAULT_CONFIG = {
   maxEditsPerRun: null,
   minGapEvidence: 2,
   /**
-   * Gap observations persist across runs in `.backpass/gap-ledger.json`, but only
-   * observations from the current selected sample count toward `minGapEvidence`.
+   * Retirement age for durable gap sightings; identity and admission rules live in
+   * `src/gap-ledger.js`.
    * A session's observations retire past this age (a duration like 90d, `all` to never expire).
    */
   gapLedgerMaxAge: "90d",

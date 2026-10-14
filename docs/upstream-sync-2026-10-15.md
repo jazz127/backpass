@@ -20,9 +20,8 @@ Native transcript identities drive direct and persisted ownership, representativ
 quotes, root ownership, and proposal routing. A child working only in `apps/api` can
 support that file even when its observer parent worked at the root. Related native
 contributions retain their individual projects and coverage status: coverage in one
-project cannot suppress an uncovered contribution in another. Session, domain, and
-skill-citation counters deduplicate observers after eligibility; eligible projects and
-maximum recurrence risk retain every native contribution. Representative quotes carry
+project cannot suppress an uncovered contribution in another. Counter definitions and
+coverage eligibility are owned by [`src/fold.js`](../src/fold.js). Representative quotes carry
 both observer and project witnesses through the proposal floors. Instruction and gap
 quotes use the same bounded selection rule, scaled to the configured evidence and
 project floors. Synthesis and report rendering emit that selected set without a second

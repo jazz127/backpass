@@ -377,7 +377,7 @@ test("a later revision citing a revoked gap never carries the revoked wording in
       },
     ],
   });
-  await foldForRun(
+  const summary = await foldForRun(
     {
       config: { ...h.config, minGapEvidence: 2, gapLedgerMaxAge: "90d" },
       repo: { root: h.root },
@@ -391,9 +391,18 @@ test("a later revision citing a revoked gap never carries the revoked wording in
   const prompt = recordedCalls().at(-1).prompt;
   assert.match(prompt, /Bind publication attestation/);
   assert.doesNotMatch(prompt, /Revoked old wording|revoked-skill/);
-  const observation = h.state.readGapLedger().entries.revoked.sessions[revised.identity];
+  const observations = Object.values(h.state.readGapLedger().entries.revoked.sessions);
+  const historical = observations.find((observation) => observation.revision === "rev-1");
+  assert.deepEqual(historical.phrasings, ["Revoked old wording"]);
+  assert.equal(historical.evidenceKey, "old");
+  assert.equal(historical.coveredBySkill, "revoked-skill");
+  const observation = observations.find((candidate) => candidate.revision === "rev-2");
+  assert.equal(observation.sourceSessionId, revised.identity);
+  assert.equal(observation.evidenceKey, evidenceKey(revised, "memory-a"));
   assert.deepEqual(observation.phrasings, ["Bind publication attestation to its exact commit."]);
   assert.equal(observation.coveredBySkill, undefined);
+  assert.equal(summary.analyzedSessions, 1);
+  assert.deepEqual(summary.gaps, [], "revoked history cannot supply a second corroborating session");
 });
 
 for (const related of [false, true])

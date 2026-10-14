@@ -40,11 +40,11 @@ import { corroborationIdentityOf } from "./transcript.js";
  *    `legacyIds`. Incompatible history stays separately keyed, and recording uses a
  *    native or source-qualified key rather than overwriting it. Storage keys do not
  *    grant extra observer votes. Persisted observations only contribute when their
- *    admitted observer belongs to the current selected sample, so sessions outside the
+ *    admitted observer belongs to the current selected sample, so observers outside the
  *    window or cap cannot skew fold.
  *  - A gap is a fact about its session: re-analysis that no longer mentions it is model
- *    noise, not the session changing, so observations are only ever replaced, not removed
- *    by absence. They retire in exactly two ways: the memory surface gains content
+ *    noise, not the session changing, so absence never removes history. Sightings retire
+ *    in exactly two ways: the memory surface gains content
  *    that covers the gap - a memory-file instruction or a skill's description/body
  *    (`GAP_COVERED_THRESHOLD`, the `reanchor` bar) - or the sighting
  *    has waited longer than `gapLedgerMaxAge` for a partner, counted from when backpass
@@ -227,10 +227,7 @@ function sameContribution(left, right) {
   if ((left.sourceKind || "native") !== (right.sourceKind || "native")) return false;
   if ((left.sourceId || null) !== (right.sourceId || null)) return false;
   if (left.contentDigest && right.contentDigest && left.contentDigest !== right.contentDigest) return false;
-  return (
-    left.sourceKind !== "external" ||
-    (left.revision === right.revision && left.evidenceKey === right.evidenceKey)
-  );
+  return left.sourceKind !== "external" || (left.revision === right.revision && left.evidenceKey === right.evidenceKey);
 }
 
 function contributionKey(observation) {

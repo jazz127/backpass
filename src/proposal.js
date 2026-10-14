@@ -603,9 +603,9 @@ export function buildProposal(rawResult, context) {
     }
 
     // Corroboration is measured, not declared, and it covers the whole always-loaded
-    // surface: adding, rewriting and removing text all clear the same session floor.
+    // surface: adding, rewriting and removing text all clear the same observer floor.
     // Asking instead whether a rewrite "really" adds an instruction requires a semantic
-    // text classifier. Counting the distinct sessions behind an edit's own quotes asks
+    // text classifier. Counting the distinct observers behind an edit's own quotes asks
     // nothing of the text, so there is no shape to game. Extract and move keep every line
     // on the always-loaded surface, so they stay exempt; a removal keeps the harm floor
     // below on top of this one.

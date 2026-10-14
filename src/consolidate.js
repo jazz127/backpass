@@ -21,9 +21,9 @@ import { warn } from "./logger.js";
  * paraphrase (measured on a production ledger: 89 entries containing at least six
  * multi-session gaps, highest cross-session score 0.34 against the 0.45 bar). The model
  * is asked only "same gap or not", the merge itself is mechanical (`mergeGapEntries`),
- * unknown ids and malformed groups are dropped, and a session is never double-counted
+ * unknown ids and malformed groups are dropped, and an observer is never double-counted
  * however the entries merge. Strict admission is untouched: merging changes how
- * sightings line up, never how many distinct sessions a proposal needs.
+ * sightings line up, never how many distinct observers a proposal needs.
  *
  * Exactly one call per run, and only when at least two entries exist. Failure is
  * fail-soft with a warning: the run degrades to lexical identity (the pre-consolidation

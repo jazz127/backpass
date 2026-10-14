@@ -23,11 +23,15 @@ contributions retain their individual projects and coverage status: coverage in 
 project cannot suppress an uncovered contribution in another. Session, domain, and
 skill-citation counters deduplicate observers after eligibility; eligible projects and
 maximum recurrence risk retain every native contribution. Representative quotes carry
-both observer and project witnesses through the proposal floors.
+both observer and project witnesses through the proposal floors. Instruction and gap
+quotes use the same bounded selection rule, scaled to the configured evidence and
+project floors. Synthesis and report rendering emit that selected set without a second
+truncation, so an independent witness cannot disappear between storage and the prompt.
 
 Ledger migration and recording had also combined a child's historical wording with
 its newly readable parent's source and content stamps. Recording, normalization,
-and consolidation now combine only compatible contributions. Filtering checks the
+and consolidation now combine only compatible contributions and retain their maximum
+recurrence risk with the same reducer used by direct folding. Filtering checks the
 original native source and stamps; stale wording stays durable without entering the
 current model view. Source, external revision, and evidence-route boundaries remain
 in force. The unsafe combined storage representation is replaced; no house capability
@@ -47,5 +51,8 @@ provenance and a single related observer vote instead of one storage row per obs
 Behavioral regressions also cover project eligibility in both coverage directions,
 contribution order, maximum risk, project-floor proposal acceptance, quote limits,
 root ownership across nested passes, and parent-header restoration before consolidation.
+Emitted instruction and gap evidence is fed into the real proposal gates at default and
+higher evidence/project floors. Persisted recording, normalization, and consolidation
+regressions cover high/low ordering and exclude stale high-risk contributions.
 These are offline synthetic checks, with no account-integration claim. The outer
 executor owns the full check, final PR conflict report, and house CI.

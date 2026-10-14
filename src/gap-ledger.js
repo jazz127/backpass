@@ -63,6 +63,11 @@ export const GAP_SIMILARITY_THRESHOLD = 0.45;
 /** A memory-file instruction this similar to a gap's proposal covers it. */
 export const GAP_COVERED_THRESHOLD = 0.6;
 
+export function highestRisk(items) {
+  const order = { high: 3, medium: 2, low: 1 };
+  return items.reduce((best, item) => (order[item.recurrenceRisk] > order[best] ? item.recurrenceRisk : best), "low");
+}
+
 export function emptyGapLedger() {
   return { version: 1, entries: {} };
 }
@@ -461,7 +466,7 @@ export function recordGapObservations(ledger, evidenceRecords, options = {}) {
         ...(priors.some(hasUnattributedSightings) ? { unattributedSightings: true } : {}),
         mistake: gap.mistake,
         quote: gap.quote,
-        recurrenceRisk: gap.recurrenceRisk,
+        recurrenceRisk: highestRisk([gap, ...priors]),
         phrasings,
         domain:
           gap.domain === "orchestration" &&
@@ -575,6 +580,7 @@ export function normalizeGapLedgerSessions(ledger, transcripts, { legacyIds = ne
       entry.sessions[sessionIdentity] = {
         ...current,
         observerId: sessionIdentity,
+        ...(priors.length > 1 ? { recurrenceRisk: highestRisk(priors) } : {}),
         ...(firstObservedAt ? { firstObservedAt } : {}),
         sightingIds: [...new Set(priors.flatMap((observation) => observation.sightingIds || []))],
         ...(priors.some(hasUnattributedSightings) ? { unattributedSightings: true } : {}),
@@ -802,6 +808,7 @@ export function mergeGapEntries(ledger, groups) {
           const earlier =
             Date.parse(obs.firstObservedAt || obs.observedAt) < Date.parse(prior.firstObservedAt || prior.observedAt);
           if (earlier) prior.firstObservedAt = obs.firstObservedAt || obs.observedAt;
+          prior.recurrenceRisk = highestRisk([prior, obs]);
           if (prior.domain === "orchestration" && obs.domain !== "orchestration") prior.domain = "project";
           if (!prior.coveredBySkill && obs.coveredBySkill) prior.coveredBySkill = obs.coveredBySkill;
           if (!prior.project && obs.project) prior.project = obs.project;

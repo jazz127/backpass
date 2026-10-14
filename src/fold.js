@@ -9,6 +9,7 @@ import {
   GAP_SIMILARITY_THRESHOLD,
   disambiguateSourceLabels,
   gapSource,
+  highestRisk,
   normalizeSourceLabel,
   resolveGapObservationObserver,
 } from "./gap-ledger.js";
@@ -220,6 +221,11 @@ export function foldEvidence(
   const parentHarmSessions = parentSessionCounts(memoryFile, instructions, "harmSessions");
   const parentNonComplianceSessions = parentSessionCounts(memoryFile, instructions, "nonComplianceSessions");
 
+  const sourceObservers = sourceIdentitiesOf(issuedSources, [
+    ...usable.map((record) => [corroborationIdentityOf(record.transcript)]),
+    ...persistedObservations.map((observation) => [observation?.sessionId]),
+  ]);
+
   const instructionRows = [...instructions.values()]
     .map((entry) => {
       const unit = findInstructionUnit(memoryFile, entry.instruction);
@@ -248,7 +254,15 @@ export function foldEvidence(
         parentId: unit?.parentId ?? null,
         nonCompliance: entry.quotes.filter((q) => q.polarity === "negative" && q.class === "non-compliance").length,
         nonComplianceSessions: entry.nonComplianceSessions.size,
-        quotes: entry.quotes.slice(0, 6),
+        quotes: representativeItems(
+          entry.quotes.map((quote) => ({
+            quote,
+            sessionId: sourceObservers[quote.source],
+            project: sourceProjects[quote.source],
+          })),
+          minGapEvidence,
+          minGapProjects,
+        ).map((item) => item.quote),
         ...(skillOverlap ? { skillOverlap } : {}),
       };
     })
@@ -331,10 +345,6 @@ export function foldEvidence(
     else reportOnlyByReason.tooFewProjects += 1;
   }
 
-  const sourceObservers = sourceIdentitiesOf(issuedSources, [
-    ...usable.map((record) => [corroborationIdentityOf(record.transcript)]),
-    ...persistedObservations.map((observation) => [observation?.sessionId]),
-  ]);
   const summary = {
     version: 1,
     generatedAt: new Date().toISOString(),
@@ -584,7 +594,7 @@ function nativeGapSightings(items) {
   return items.flatMap((item) => item.sightings);
 }
 
-function representativeGapItems(items, route, minGapEvidence, minGapProjects) {
+function representativeItems(items, minGapEvidence, minGapProjects) {
   const observers = new Map();
   const projects = new Map();
   for (const item of items) {
@@ -594,11 +604,15 @@ function representativeGapItems(items, route, minGapEvidence, minGapProjects) {
   const candidates = [
     ...new Set([...projects.values()].slice(0, minGapProjects).concat([...observers.values()], items)),
   ];
-  const selected = candidates.slice(0, Math.max(6, minGapEvidence + Math.max(0, minGapProjects - 1)));
-  if (!route || candidates.length <= selected.length) return selected;
+  return candidates.slice(0, Math.max(6, minGapEvidence + Math.max(0, minGapProjects - 1)));
+}
+
+function representativeGapItems(items, route, minGapEvidence, minGapProjects) {
+  const selected = representativeItems(items, minGapEvidence, minGapProjects);
+  if (!route || items.length <= selected.length) return selected;
   const owner = route.ownerOf(nativeGapSightings(items).map((item) => item.sessionId));
   if (route.ownerOf(nativeGapSightings(selected).map((item) => item.sessionId)) === owner) return selected;
-  for (const item of candidates.slice(selected.length)) {
+  for (const item of items.filter((candidate) => !selected.includes(candidate))) {
     const candidate = [...selected.slice(0, -1), item];
     if (route.ownerOf(nativeGapSightings(candidate).map((entry) => entry.sessionId)) === owner) {
       const losesObserver =
@@ -631,10 +645,6 @@ function clusterDomainVote(items) {
   };
 }
 
-function highestRisk(items) {
-  const order = { high: 3, medium: 2, low: 1 };
-  return items.reduce((best, i) => (order[i.recurrenceRisk] > order[best] ? i.recurrenceRisk : best), "low");
-}
 
 /**
  * The failed-trigger reading of a cluster: which existing skill the analyses judged to
@@ -717,7 +727,7 @@ function renderEvidence(summary, { includeReportOnly }) {
         (row.known ? "" : " (id not found in current file - stale reference)"),
     );
     if (row.skillOverlap) renderSkillOverlap(lines, row.skillOverlap);
-    for (const quote of row.quotes.slice(0, 3)) {
+    for (const quote of row.quotes) {
       const sign = quote.polarity === "negative" ? "-" : "+";
       const cls = quote.polarity === "negative" ? ` [${quote.class ?? "unclassified"}]` : "";
       const effect = quote.effect ? ` :: ${oneLine(quote.effect, 200)}` : "";
@@ -796,7 +806,7 @@ function renderEvidence(summary, { includeReportOnly }) {
           `line instead of duplicating its content in the memory file`,
       );
     }
-    for (const quote of gap.quotes.slice(0, 3)) {
+    for (const quote of gap.quotes) {
       lines.push(`    "${oneLine(quote.text)}" (${quote.source})`);
     }
   }

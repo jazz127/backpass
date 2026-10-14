@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { foldForRun } from "../src/commands/propose.js";
-import { foldEvidence } from "../src/fold.js";
+import { foldEvidence, renderEvidenceForPrompt } from "../src/fold.js";
 import {
   emptyGapLedger,
   filterGapLedger,
@@ -331,13 +331,160 @@ test("native project witnesses survive quote limits without multiplying observer
   assert.equal(summary.gaps[0].failedTriggerSkill, undefined);
 });
 
-test("repeated native evidence retains the highest eligible recurrence risk", () => {
-  const repeated = evidence("P", "P");
-  repeated.gaps[0].recurrenceRisk = "low";
-  repeated.gaps.push({ ...repeated.gaps[0], quote: "P repeated the mistake", recurrenceRisk: "high" });
-  const independent = evidence("X", "X");
-  independent.gaps[0].recurrenceRisk = "low";
-  const summary = foldEvidence([repeated, independent]);
-  assert.equal(summary.gaps[0].sessions, 2);
-  assert.equal(summary.gaps[0].recurrenceRisk, "high");
+test("repeated native evidence retains the highest eligible recurrence risk", async () => {
+  for (const persisted of [false, true]) {
+    for (const risks of [["low", "high"], ["high", "low"]]) {
+      const repeated = evidence("C", "P");
+      repeated.gaps = risks.map((recurrenceRisk, index) => ({
+        ...repeated.gaps[0],
+        quote: `C repeated the mistake ${index}`,
+        recurrenceRisk,
+      }));
+      const independent = evidence("X", "X");
+      independent.gaps[0].recurrenceRisk = "low";
+      const records = [repeated, independent];
+      let summary;
+      if (persisted) {
+        const ctx = context(makeRepo({ "AGENTS.md": "# Memory\n" }));
+        for (const record of records) ctx.config.state.writeEvidence(record.transcript.id, record);
+        summary = await foldForRun(
+          ctx,
+          { path: "AGENTS.md", units: [] },
+          "memory",
+          [],
+          records.map((record) => record.transcript),
+        );
+        const native = Object.values(ctx.config.state.readGapLedger().entries)[0].sessions.P;
+        assert.equal(native.recurrenceRisk, "high");
+        assert.equal(native.sourceSessionId, "C");
+      } else {
+        summary = foldEvidence(records);
+      }
+      assert.equal(summary.gaps[0].sessions, 2);
+      assert.equal(summary.gaps[0].recurrenceRisk, "high");
+    }
+  }
 });
+
+function emittedEvidence(summary) {
+  const prompt = renderEvidenceForPrompt(summary);
+  return [...prompt.matchAll(/^ {4}(?:([-+])(?: \[[^\]]+\])? )?"([^"]+)"(?: :: .*?)? \((.+)\)$/gm)].map((match) => ({
+    polarity: match[1] === "+" ? "positive" : "negative",
+    text: match[2],
+    source: match[3],
+  }));
+}
+
+for (const lane of ["gap", "positive", "negative"]) {
+  for (const [minGapEvidence, minGapProjects, maximumQuotes] of [[2, 0, 6], [2, 3, 6], [7, 3, 9], [2, 8, 9]]) {
+    test(`emitted ${lane} witnesses satisfy observer=${minGapEvidence} and project=${minGapProjects} floors`, () => {
+      const repo = makeRepo({ "AGENTS.md": "# Memory\n\n- Existing rule.\n" });
+      const related = Array.from({ length: 8 }, (_, index) => evidence(`F${index}`, "P"));
+      const independent = Array.from({ length: minGapEvidence - 1 }, (_, index) => evidence(`X${index}`, `X${index}`));
+      const records = [...related, ...independent];
+      for (const [index, record] of records.entries()) {
+        Object.assign(record.transcript, { project: `/project-${index < minGapProjects ? index : 0}` });
+        if (lane !== "gap") {
+          record[lane] = [{ instruction: "AG-001", quote: `witness ${record.transcript.id}`, class: "harm" }];
+          record.gaps = [];
+        }
+      }
+      const staged = stageAndMeasure({
+        repo,
+        edit: (root) => writeIn(root, "AGENTS.md", (text) => `${text}- ${GAP}\n`),
+      });
+      const summary = foldEvidence(records, { minGapEvidence, minGapProjects, memoryFile: staged.memoryFile });
+      const citations = emittedEvidence(summary);
+      assert.ok(citations.length <= maximumQuotes);
+      const built = buildProposal(
+        {
+          edits: [
+            {
+              changes: staged.measured.changes.map((change) => change.id),
+              kind: "add",
+              title: "Use the emitted witnesses",
+              evidence: citations,
+            },
+          ],
+        },
+        {
+          repo,
+          memoryFile: staged.memoryFile,
+          measured: staged.measured,
+          summary,
+          scope: minGapProjects ? { kind: "user" } : null,
+          config: {
+            budgetTokens: 5000,
+            maxEditsPerRun: 5,
+            minGapEvidence,
+            minGapProjects,
+            skillsDir: ".agents/skills",
+          },
+        },
+      );
+      assert.deepEqual(built.violations, [], "the final emitted evidence must carry the witnesses needed by the gates");
+      assert.equal(built.proposal.edits[0].transcripts, minGapEvidence);
+      if (minGapProjects) assert.equal(built.proposal.edits[0].projects, minGapProjects);
+    });
+  }
+}
+
+for (const boundary of ["recording", "normalization", "consolidation"]) {
+  for (const stale of [false, true]) {
+    test(`${boundary} preserves compatible risk maxima without refreshing ${stale ? "stale" : "current"} provenance`, async () => {
+      for (const highFirst of [false, true]) {
+        const ctx = context(makeRepo({ "AGENTS.md": "# Memory\n" }));
+        const first = evidence("C", "P");
+        first.gaps[0].recurrenceRisk = highFirst || stale ? "high" : "low";
+        const second = evidence("C", "P");
+        second.gaps[0].recurrenceRisk = highFirst || stale ? "low" : "high";
+        if (stale) first.transcript.contentSignature = "old-child";
+        first.key = evidenceKey(first.transcript, "memory");
+        const ledger = emptyGapLedger();
+        recordGapObservations(ledger, [first]);
+        const entry = Object.values(ledger.entries)[0];
+        const original = structuredClone(entry.sessions.P);
+        if (boundary === "recording") {
+          recordGapObservations(ledger, [second]);
+        } else if (boundary === "normalization") {
+          const alias = emptyGapLedger();
+          recordGapObservations(alias, [second]);
+          entry.sessions.C = Object.values(alias.entries)[0].sessions.P;
+          normalizeGapLedgerSessions(ledger, [second.transcript]);
+        } else {
+          const other = emptyGapLedger();
+          second.gaps[0].proposedInstruction = "Inspect database contracts before editing SQL.";
+          recordGapObservations(other, [second]);
+          const otherEntry = Object.values(other.entries)[0];
+          ledger.entries[otherEntry.id] = otherEntry;
+          mergeGapEntries(ledger, [[entry.id, otherEntry.id]]);
+        }
+        ctx.config.state.writeGapLedger(ledger);
+        second.gaps = [];
+        const independent = evidence("X", "X");
+        independent.gaps[0].recurrenceRisk = "low";
+        for (const record of [second, independent]) ctx.config.state.writeEvidence(record.transcript.id, record);
+        const summary = await foldForRun(ctx, { path: "AGENTS.md", units: [] }, "memory", [], [
+          second.transcript,
+          independent.transcript,
+        ]);
+        assert.equal(summary.gaps[0].sessions, 2);
+        assert.equal(summary.gaps[0].recurrenceRisk, stale ? "low" : "high");
+        const observations = Object.values(ctx.config.state.readGapLedger().entries)
+          .flatMap((candidate) => Object.values(candidate.sessions));
+        if (stale) {
+          const history = observations.find((observation) => observation.contentDigest === "old-child");
+          assert.equal(history.sourceSessionId, "C");
+          assert.equal(history.recurrenceRisk, "high");
+          assert.equal(history.firstObservedAt, original.firstObservedAt);
+          assert.equal(history.evidenceKey, original.evidenceKey);
+        } else {
+          const native = observations.find((observation) => observation.sourceSessionId === "C");
+          assert.equal(native.recurrenceRisk, "high");
+          assert.equal(native.contentDigest, "C");
+          assert.equal(native.evidenceKey, original.evidenceKey);
+        }
+      }
+    });
+  }
+}

@@ -7,7 +7,6 @@ import {
   normalizeGapLedgerSessions,
   pruneGapLedger,
   recordGapObservations,
-  resolveGapObservationObserver,
 } from "../gap-ledger.js";
 import { synthesizeProposal } from "../synthesize.js";
 import { ProposalViolation } from "../proposal.js";
@@ -104,6 +103,7 @@ export async function foldForRun(ctx, memoryFile, memoryHash, skills = [], trans
   recordGapObservations(ledger, relevant, { skills, legacyIds, transcripts });
   const gapView = filterGapLedger(structuredClone(ledger), relevant, transcripts, {
     sourceKind: traceOnly ? "external" : "native",
+    legacyIds,
   });
   // Consolidate after recording, so the pass sees this run's sightings too: two
   // sessions coining the same brand-new gap in one parallel fan-out can only line up
@@ -125,16 +125,11 @@ export async function foldForRun(ctx, memoryFile, memoryHash, skills = [], trans
   }
   state.writeGapLedger(ledger);
 
-  const gapObservations = ledgerGapObservations(gapView, memoryFile.path, skills)
-    .map((observation) => ({
-      ...observation,
-      sessionId: resolveGapObservationObserver(observation, selectedObserversByNative) ?? observation.sessionId,
-    }))
-    .filter((observation) => {
-      if (!selectedGapSessions.has(observation.sessionId)) return false;
-      const observers = selectedObserversByNative.get(observation.sourceSessionId);
-      return !observers || (observers.size === 1 && observers.has(observation.sessionId));
-    });
+  const gapObservations = ledgerGapObservations(gapView, memoryFile.path, skills).filter((observation) => {
+    if (!selectedGapSessions.has(observation.sessionId)) return false;
+    const observers = selectedObserversByNative.get(observation.sourceSessionId);
+    return !observers || (observers.size === 1 && observers.has(observation.sessionId));
+  });
   const summary = foldEvidence(relevant, {
     minGapEvidence,
     minGapProjects: ctx.scope?.kind === "user" ? ctx.config.minGapProjects || 1 : 0,

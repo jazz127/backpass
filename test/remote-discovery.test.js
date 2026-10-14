@@ -28,6 +28,7 @@ import { SELF_SESSION_SENTINEL } from "../src/sentinel.js";
 import { UserError, setLoggerSink } from "../src/logger.js";
 import { clearProgressSink, setProgressSink } from "../src/progress.js";
 import { foldEvidence } from "../src/fold.js";
+import { assertNativeGapContributions } from "./helpers/gap-observers.js";
 import { INTERACTIVE, NON_INTERACTIVE } from "../src/interaction.js";
 
 const REMOTE = "github.com/acme/demo";
@@ -104,12 +105,8 @@ function assertSingletonObserver(transcripts, identity) {
   assert.equal(folded.instructions[0].harmSessions, 1);
   const ledger = { version: 1, entries: {} };
   recordGapObservations(ledger, records);
-  const sessions = Object.values(ledger.entries)[0].sessions;
-  assert.deepEqual(Object.keys(sessions), [identity]);
-  assert.deepEqual(sessions[identity].sightingIds.sort(), transcripts.map((transcript) => transcript.identity).sort());
-  assert.equal(sessions[identity].sourceSessionId, transcripts.at(-1).identity);
-  assert.equal(sessions[identity].source, gapSource(transcripts.at(-1)));
-  assert.ok(sessions[identity].source.includes(transcripts.at(-1).nativeId));
+  assert.ok(transcripts.every((transcript) => transcript.corroborationIdentity === identity));
+  assertNativeGapContributions(ledger, transcripts);
   const persisted = foldEvidence(records, {
     minGapEvidence: 2,
     gapObservations: ledgerGapObservations(ledger, "AGENTS.md"),
@@ -213,7 +210,7 @@ test("a copied OMP root and retained remote descendants count as one observer wi
   assert.equal(folded.totals.droppedGapSingletons, 1);
   const ledger = { version: 1, entries: {} };
   recordGapObservations(ledger, records);
-  assert.deepEqual(Object.keys(Object.values(ledger.entries)[0].sessions), [root.identity]);
+  assertNativeGapContributions(ledger, result.transcripts);
 
   const splitPath = path.join(s.localHome, ".omp", "agent", "sessions", "-repo-demo", "split-root.jsonl");
   writeOmpSession(splitPath, "root-native", s.repoRoot);
@@ -390,10 +387,7 @@ for (const filtered of [false, true]) {
     assert.equal(folded.instructions[0].harmSessions, 2);
     const ledger = { version: 1, entries: {} };
     recordGapObservations(ledger, records);
-    assert.deepEqual(
-      Object.keys(Object.values(ledger.entries)[0].sessions).sort(),
-      [independent.identity, a.identity].sort(),
-    );
+    assertNativeGapContributions(ledger, [independent, b, c]);
     const persisted = foldEvidence(records, {
       minGapEvidence: 2,
       gapObservations: ledgerGapObservations(ledger, "AGENTS.md"),
@@ -485,7 +479,7 @@ for (const remoteOnly of [false, true]) {
       assert.equal(folded.instructions[0].harmSessions, 2);
       const ledger = { version: 1, entries: {} };
       recordGapObservations(ledger, records);
-      assert.equal(Object.keys(Object.values(ledger.entries)[0].sessions).length, 2);
+      assertNativeGapContributions(ledger, [child, grandchild, independent]);
       const persisted = foldEvidence(records, {
         minGapEvidence: 2,
         gapObservations: ledgerGapObservations(ledger, "AGENTS.md"),
@@ -580,10 +574,7 @@ for (const remoteOnly of [false, true]) {
         assert.equal(folded.instructions[0].harmSessions, 2);
         const ledger = { version: 1, entries: {} };
         recordGapObservations(ledger, records);
-        assert.deepEqual(
-          Object.keys(Object.values(ledger.entries)[0].sessions).sort(),
-          [familyIdentity, independent.identity].sort(),
-        );
+        assertNativeGapContributions(ledger, [child, grandchild, independent]);
         const persisted = foldEvidence(records, {
           minGapEvidence: 2,
           gapObservations: ledgerGapObservations(ledger, "AGENTS.md"),
@@ -680,7 +671,7 @@ test("filtered OMP roots still share one cross-host gap and harm observer", asyn
     assert.equal(folded.instructions[0].harmSessions, 1);
     const ledger = { version: 1, entries: {} };
     recordGapObservations(ledger, records, { now: new Date(now) });
-    assert.equal(Object.keys(Object.values(ledger.entries)[0].sessions).length, 1);
+    assertNativeGapContributions(ledger, result.transcripts);
     const persisted = foldEvidence(records, {
       minGapEvidence: 2,
       gapObservations: ledgerGapObservations(ledger, "AGENTS.md"),

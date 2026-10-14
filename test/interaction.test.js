@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import vm from "node:vm";
+import { assertNativeGapContributions } from "./helpers/gap-observers.js";
 
 import * as claude from "../src/discovery/adapters/claude.js";
 import * as codex from "../src/discovery/adapters/codex.js";
@@ -1179,8 +1180,7 @@ test("nested OMP subagents share the root identity once the root session appears
       [child, grandchild],
     );
     assert.equal(summary.gaps.length, 0, "per-file sightings of one root session are one observer");
-    const [entry] = Object.values(config.state.readGapLedger().entries);
-    assert.deepEqual(Object.keys(entry.sessions), [root.identity]);
+    assertNativeGapContributions(config.state.readGapLedger(), [child, grandchild]);
   } finally {
     if (prevHome === undefined) delete process.env.HOME;
     else process.env.HOME = prevHome;

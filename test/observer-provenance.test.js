@@ -230,3 +230,114 @@ test("normalization and consolidation preserve original native, revision and rou
     if (axis !== "native") assert.ok(observations.every((observation) => !observation.phrasings.includes(GAP)), axis);
   }
 });
+
+for (const persisted of [false, true]) {
+  for (const coveredNative of [null, "P", "C"]) {
+    test(`eligible native projects: ${persisted ? "persisted" : "direct"}, ${coveredNative || "no"} coverage`, async () => {
+      for (const reverse of [false, true]) {
+        const projectA = makeRepo({ "AGENTS.md": coveredNative === "P" ? `# A\n\n- ${GAP}\n` : "# A\n" });
+        const projectB = makeRepo({ "AGENTS.md": coveredNative === "C" ? `# B\n\n- ${GAP}\n` : "# B\n" });
+        const projectD = makeRepo({ "AGENTS.md": "# D\n" });
+        const userRepo = makeRepo({ "AGENTS.md": "# User\n" });
+        const ctx = context(userRepo);
+        Object.assign(ctx.config, { minGapProjects: 2 });
+        Object.assign(ctx, { scope: { kind: "user" } });
+        const records = [evidence("P", "P"), evidence("C", "P"), evidence("X", "X")];
+        for (const [index, record] of records.entries()) {
+          const project = index === 0 ? projectA : index === 1 ? projectB : coveredNative ? projectD : projectA;
+          Object.assign(record.transcript, { project: project.root, projectRoot: project.root });
+          Object.assign(record.gaps[0], {
+            recurrenceRisk: index === 1 ? "high" : "low",
+            domain: index === 0 ? "orchestration" : "project",
+            ...(index < 2 ? { coveredBySkill: "db-docs" } : {}),
+          });
+        }
+        if (reverse) records.reverse();
+        let summary;
+        if (persisted) {
+          for (const record of records) ctx.config.state.writeEvidence(record.transcript.id, record);
+          summary = await foldForRun(
+            ctx,
+            { path: "AGENTS.md", units: [] },
+            "memory",
+            [{ name: "db-docs", description: "", body: "" }],
+            records.map((record) => record.transcript),
+          );
+        } else {
+          summary = foldEvidence(records, { minGapEvidence: 2, minGapProjects: 2, checkProjectCoverage: true });
+        }
+        assert.equal(summary.gaps.length, 1, "two uncovered observers in two projects clear both floors");
+        const gap = summary.gaps[0];
+        assert.equal(gap.sessions, 2);
+        assert.equal(gap.projects, 2);
+        assert.equal(gap.recurrenceRisk, coveredNative === "C" ? "low" : "high");
+        assert.equal(gap.orchestrationSightings, coveredNative === "C" ? 1 : 0);
+        assert.equal(gap.failedTriggerSkill, undefined, "two related skill citations remain one observer vote");
+        assert.equal(gap.projectCoveredSessions, coveredNative ? 1 : 0);
+        assert.ok(!gap.quotes.some((quote) => coveredNative && quote.text.startsWith(`${coveredNative} `)));
+        if (coveredNative !== "C") assert.ok(gap.quotes.some((quote) => quote.text.startsWith("C ")));
+
+        const staged = stageAndMeasure({
+          repo: userRepo,
+          edit: (root) => writeIn(root, "AGENTS.md", (text) => `${text}- ${GAP}\n`),
+        });
+        const built = buildProposal(
+          {
+            edits: [
+              {
+                changes: staged.measured.changes.map((change) => change.id),
+                kind: "add",
+                title: "Read the schema",
+                evidence: gap.quotes.map((quote) => ({ polarity: "negative", ...quote })),
+              },
+            ],
+          },
+          {
+            repo: userRepo,
+            memoryFile: staged.memoryFile,
+            measured: staged.measured,
+            summary,
+            scope: { kind: "user" },
+            config: {
+              budgetTokens: 5000,
+              maxEditsPerRun: 5,
+              minGapEvidence: 2,
+              minGapProjects: 2,
+              skillsDir: ".agents/skills",
+            },
+          },
+        );
+        assert.deepEqual(built.violations, []);
+        assert.equal(built.proposal.edits[0].transcripts, 2);
+        assert.equal(built.proposal.edits[0].projects, 2);
+      }
+    });
+  }
+}
+
+test("native project witnesses survive quote limits without multiplying observer or skill votes", () => {
+  const records = Array.from({ length: 7 }, (_, index) => evidence(`C${index}`, "P"));
+  records.push(evidence("X", "X"));
+  for (const [index, record] of records.entries()) {
+    Object.assign(record.transcript, { project: index === 6 ? "/project-b" : "/project-a" });
+    Object.assign(record.gaps[0], { coveredBySkill: index < 7 ? "db-docs" : null });
+  }
+  const summary = foldEvidence(records, { minGapEvidence: 2, minGapProjects: 2 });
+  assert.equal(summary.gaps[0].sessions, 2);
+  assert.equal(summary.gaps[0].projects, 2);
+  const quotes = summary.gaps[0].quotes;
+  assert.ok(quotes.some((quote) => quote.text.startsWith("C6 ")));
+  assert.ok(quotes.some((quote) => quote.text.startsWith("X ")));
+  assert.equal(summary.gaps[0].failedTriggerSkill, undefined);
+});
+
+test("repeated native evidence retains the highest eligible recurrence risk", () => {
+  const repeated = evidence("P", "P");
+  repeated.gaps[0].recurrenceRisk = "low";
+  repeated.gaps.push({ ...repeated.gaps[0], quote: "P repeated the mistake", recurrenceRisk: "high" });
+  const independent = evidence("X", "X");
+  independent.gaps[0].recurrenceRisk = "low";
+  const summary = foldEvidence([repeated, independent]);
+  assert.equal(summary.gaps[0].sessions, 2);
+  assert.equal(summary.gaps[0].recurrenceRisk, "high");
+});

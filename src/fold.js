@@ -264,7 +264,7 @@ export function foldEvidence(
       projects: cluster.projects.size,
       projectCoveredSessions: cluster.projectCoveredSessions.size,
       recurrenceRisk: highestRisk(eligibleItems),
-      quotes: representativeGapItems(eligibleItems, route).map((i) => ({
+      quotes: representativeGapItems(eligibleItems, route, minGapEvidence, minGapProjects).map((i) => ({
         text: i.quote,
         effect: i.mistake,
         source: i.source,
@@ -449,6 +449,8 @@ export function clusterGapObservations(observations, { checkProjectCoverage = fa
       recurrenceRisk: obs.recurrenceRisk,
       source: obs.source,
       sessionId: obs.sessionId,
+      sourceSessionId: nativeSightingIds(obs)[0],
+      projectRoot: obs.projectRoot || null,
       sightings: nativeSightingIds(obs).map((sessionId) => ({ sessionId, quote: obs.quote })),
       domain: observationDomain(obs),
       project: obs.project || null,
@@ -457,9 +459,16 @@ export function clusterGapObservations(observations, { checkProjectCoverage = fa
       gapIds: new Set(observationGapIds(obs)),
     };
     if (cluster) {
-      const sessionItem = cluster.items.find((candidate) => candidate.sessionId === obs.sessionId);
+      const sessionItem = cluster.items.find(
+        (candidate) =>
+          candidate.sessionId === item.sessionId &&
+          candidate.sourceSessionId === item.sourceSessionId &&
+          candidate.project === item.project &&
+          candidate.projectRoot === item.projectRoot,
+      );
       if (sessionItem) {
         sessionItem.sightings.push(...item.sightings);
+        sessionItem.recurrenceRisk = highestRisk([sessionItem, item]);
         if (obs.coveredBySkill) sessionItem.coveredBySkills.add(obs.coveredBySkill);
         if (observationDomain(obs) !== "orchestration") sessionItem.domain = "project";
         if (projectCovered) sessionItem.projectCovered = true;
@@ -575,14 +584,30 @@ function nativeGapSightings(items) {
   return items.flatMap((item) => item.sightings);
 }
 
-function representativeGapItems(items, route) {
-  const selected = items.slice(0, 6);
-  if (!route || items.length <= 6) return selected;
+function representativeGapItems(items, route, minGapEvidence, minGapProjects) {
+  const observers = new Map();
+  const projects = new Map();
+  for (const item of items) {
+    if (!observers.has(item.sessionId)) observers.set(item.sessionId, item);
+    if (item.project && !projects.has(item.project)) projects.set(item.project, item);
+  }
+  const candidates = [
+    ...new Set([...projects.values()].slice(0, minGapProjects).concat([...observers.values()], items)),
+  ];
+  const selected = candidates.slice(0, Math.max(6, minGapEvidence + Math.max(0, minGapProjects - 1)));
+  if (!route || candidates.length <= selected.length) return selected;
   const owner = route.ownerOf(nativeGapSightings(items).map((item) => item.sessionId));
   if (route.ownerOf(nativeGapSightings(selected).map((item) => item.sessionId)) === owner) return selected;
-  for (const item of items.slice(6)) {
+  for (const item of candidates.slice(selected.length)) {
     const candidate = [...selected.slice(0, -1), item];
-    if (route.ownerOf(nativeGapSightings(candidate).map((entry) => entry.sessionId)) === owner) return candidate;
+    if (route.ownerOf(nativeGapSightings(candidate).map((entry) => entry.sessionId)) === owner) {
+      const losesObserver =
+        new Set(candidate.map((entry) => entry.sessionId)).size < new Set(selected.map((entry) => entry.sessionId)).size;
+      const losesProject =
+        new Set(candidate.map((entry) => entry.project).filter(Boolean)).size <
+        new Set(selected.map((entry) => entry.project).filter(Boolean)).size;
+      return losesObserver || losesProject ? [...selected, item] : candidate;
+    }
   }
   return selected;
 }
@@ -593,8 +618,12 @@ function representativeGapItems(items, route) {
  * call cannot kill a real recurrence.
  */
 function clusterDomainVote(items) {
-  const orchestrationSightings = items.filter((item) => item.domain === "orchestration").length;
-  const sightings = items.length;
+  const domains = new Map();
+  for (const item of items) {
+    if (!domains.has(item.sessionId) || item.domain !== "orchestration") domains.set(item.sessionId, item.domain);
+  }
+  const orchestrationSightings = [...domains.values()].filter((domain) => domain === "orchestration").length;
+  const sightings = domains.size;
   return {
     orchestrationSightings,
     mixed: orchestrationSightings > 0 && orchestrationSightings < sightings,
@@ -609,20 +638,20 @@ function highestRisk(items) {
 
 /**
  * The failed-trigger reading of a cluster: which existing skill the analyses judged to
- * already cover this mistake, and in how many of the cluster's observers. Items are one
- * per observer, so related transcripts cannot multiply citations. The most-cited skill
- * wins; a cluster nobody tied to a skill contributes nothing.
+ * already cover this mistake, and in how many of the cluster's observers. The most-cited
+ * skill wins; a cluster nobody tied to a skill contributes nothing.
  */
 function failedTriggerOf(items, minGapEvidence) {
   const counts = new Map();
   for (const item of items) {
     for (const skill of item.coveredBySkills) {
-      counts.set(skill, (counts.get(skill) || 0) + 1);
+      if (!counts.has(skill)) counts.set(skill, new Set());
+      counts.get(skill).add(item.sessionId);
     }
   }
   let best = null;
   for (const [skill, sessions] of counts) {
-    if (!best || sessions > best.sessions) best = { skill, sessions };
+    if (!best || sessions.size > best.sessions) best = { skill, sessions: sessions.size };
   }
   return best && best.sessions >= minGapEvidence
     ? { failedTriggerSkill: best.skill, failedTriggerSessions: best.sessions }

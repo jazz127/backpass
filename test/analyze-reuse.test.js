@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { assertNativeGapContributions } from "./helpers/gap-observers.js";
 
 import { resolveRepo } from "../src/repo.js";
 import { loadConfig } from "../src/config.js";
@@ -366,10 +367,7 @@ test("OMP analysis persists parent observer identity and fold restores it for le
 
     const current = await foldForRun(foldCtx, memoryFile, memoryHash, [], transcripts);
     assert.equal(current.gaps.length, 0, "parent and child count as one observer, below the two-session threshold");
-    const currentSessionIds = Object.values(state.readGapLedger().entries).flatMap((entry) =>
-      Object.keys(entry.sessions),
-    );
-    assert.deepEqual(currentSessionIds, [transcripts[0].corroborationIdentity]);
+    assertNativeGapContributions(state.readGapLedger(), transcripts);
     assert.ok(
       evidence.every((record) =>
         transcripts.some(
@@ -413,10 +411,7 @@ test("OMP analysis persists parent observer identity and fold restores it for le
 
     const legacy = await foldForRun(foldCtx, memoryFile, memoryHash, [], transcripts);
     assert.equal(legacy.gaps.length, 0, "selected discovery metadata restores identity for older evidence");
-    const legacySessionIds = Object.values(state.readGapLedger().entries).flatMap((entry) =>
-      Object.keys(entry.sessions),
-    );
-    assert.deepEqual(legacySessionIds, [transcripts[0].corroborationIdentity]);
+    assertNativeGapContributions(state.readGapLedger(), transcripts);
   } finally {
     if (previousHome === undefined) delete process.env.HOME;
     else process.env.HOME = previousHome;

@@ -607,6 +607,7 @@ export function filterGapLedger(ledger, evidenceRecords, selectedTranscripts = [
     options.sourceKind ||
     (selectedTranscripts.some((transcript) => transcript.sourceKind === "external") ? "external" : "native");
   const selected = new Map();
+  const observersByNative = selectedNativeObservers(selectedTranscripts, options.legacyIds || new Set());
   for (const transcript of selectedTranscripts) {
     selected.set(transcript.identity || transcript.id, transcript);
     if (transcript.sourceKind !== "external" && transcript.id) selected.set(transcript.id, transcript);
@@ -633,6 +634,10 @@ export function filterGapLedger(ledger, evidenceRecords, selectedTranscripts = [
                 observation.contentDigest ===
                   (transcript.contentSignature || `${transcript.mtimeMs}:${transcript.bytes}`));
       if (!valid) delete entry.sessions[sessionId];
+      else {
+        const observer = resolveGapObservationObserver(observation, observersByNative);
+        if (observer) observation.observerId = observer;
+      }
     }
     if (!Object.keys(entry.sessions).length) {
       delete ledger.entries[id];

@@ -174,3 +174,45 @@ test("consolidation sees fresh native contributions and counts related observers
   assert.ok(prompt.includes(`(sessions=2) ${freshWording}`));
   assert.ok(!prompt.includes(oldWording));
 });
+
+test("restored ancestry resolves consolidation observers without refreshing stale analysis history", async () => {
+  const parent = record("P", SIGHTING_A);
+  const child = record("C", SIGHTING_A);
+  Object.assign(child.transcript, { corroborationIdentity: "P", contentSignature: "unchanged-child" });
+  child.key = evidenceKey(child.transcript, "h1");
+  const h = harness([parent, child], { merges: [] });
+  await foldForRun(h.ctx, memoryFile, "h1", [], [parent.transcript, child.transcript]);
+
+  const lostParent = { ...child, transcript: { ...child.transcript, corroborationIdentity: "C" } };
+  lostParent.key = evidenceKey(lostParent.transcript, "h1");
+  h.state.writeEvidence(lostParent.transcript.id, lostParent);
+  await foldForRun(h.ctx, memoryFile, "h1", [], [lostParent.transcript]);
+  const history = structuredClone(
+    Object.values(h.state.readGapLedger().entries)
+      .flatMap((entry) => Object.values(entry.sessions))
+      .find((observation) => observation.sourceSessionId === "C"),
+  );
+  assert.equal(history.observerId, "C");
+
+  const fresh = [record("P", SIGHTING_A), record("X", SIGHTING_A), record("Y", UNRELATED)];
+  for (const evidence of fresh) {
+    evidence.memoryHash = "h2";
+    evidence.key = evidenceKey(evidence.transcript, "h2");
+    h.state.writeEvidence(evidence.transcript.id, evidence);
+  }
+  const currentChild = { ...lostParent.transcript, corroborationIdentity: "P" };
+  const summary = await foldForRun(h.ctx, memoryFile, "h2", [], [
+    ...fresh.map((evidence) => evidence.transcript),
+    currentChild,
+  ]);
+  assert.equal(summary.analyzedSessions, 3, "the child's h1 analysis remains stale");
+  assert.equal(summary.gaps[0].sessions, 2);
+  assert.equal(summary.sourceObservers[history.source], "P");
+  const prompt = fs.readFileSync(path.join(h.state.root, "prompts", "consolidate-gaps.md"), "utf8");
+  assert.ok(prompt.includes(`(sessions=2) ${SIGHTING_A}`));
+  assert.ok(!prompt.includes(`(sessions=3) ${SIGHTING_A}`));
+  const durable = Object.values(h.state.readGapLedger().entries)
+    .flatMap((entry) => Object.values(entry.sessions))
+    .find((observation) => observation.sourceSessionId === "C");
+  assert.deepEqual(durable, history, "resolving the view must preserve every durable contribution stamp");
+});

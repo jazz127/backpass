@@ -17,15 +17,15 @@ export function assertNativeGapContributions(ledger, transcripts, memoryPath = "
     const observation = observations.find((candidate) => candidate.sourceSessionId === identity);
     assert.deepEqual(observation.sightingIds, [identity]);
     assert.equal(observation.source, gapSource(transcript));
-    assert.equal(
-      observation.contentDigest,
-      transcript.contentSignature || `${transcript.mtimeMs}:${transcript.bytes}`,
-    );
+    assert.equal(observation.contentDigest, transcript.contentSignature || `${transcript.mtimeMs}:${transcript.bytes}`);
   }
-  const summary = foldEvidence(transcripts.map((transcript) => ({ status: "ok", transcript })), {
-    minGapEvidence: 1,
-    gapObservations: ledgerGapObservations(ledger, memoryPath),
-  });
+  const summary = foldEvidence(
+    transcripts.map((transcript) => ({ status: "ok", transcript })),
+    {
+      minGapEvidence: 1,
+      gapObservations: ledgerGapObservations(ledger, memoryPath),
+    },
+  );
   assert.equal(summary.gaps.length, 1);
   assert.equal(summary.gaps[0].sessions, new Set(transcripts.map(corroborationIdentityOf)).size);
 }

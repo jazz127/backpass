@@ -134,9 +134,12 @@ test("related native sightings retain cross-directory ownership and one observer
   const root = foldEvidence(records, { route });
   assert.equal(root.gaps[0].sessions, 2, "P and C share one vote");
   assert.deepEqual(propose(repo, root, route).violations, []);
-  const nested = foldEvidence(records.filter((record) => record.transcript.id !== "P"), {
-    route: { ...route, weight: API.path, rootOwnedGaps: root.rootOwnedGaps },
-  });
+  const nested = foldEvidence(
+    records.filter((record) => record.transcript.id !== "P"),
+    {
+      route: { ...route, weight: API.path, rootOwnedGaps: root.rootOwnedGaps },
+    },
+  );
   assert.deepEqual(nested.gaps, [], "the native child's real quote keeps the root ownership override");
 });
 
@@ -226,8 +229,15 @@ test("normalization and consolidation preserve original native, revision and rou
     );
     const filtered = filterGapLedger(structuredClone(ledger), [second], [second.transcript]);
     const observations = ledgerGapObservations(filtered, "AGENTS.md");
-    assert.ok(observations.some((observation) => observation.phrasings.includes(CURRENT_GAP)), axis);
-    if (axis !== "native") assert.ok(observations.every((observation) => !observation.phrasings.includes(GAP)), axis);
+    assert.ok(
+      observations.some((observation) => observation.phrasings.includes(CURRENT_GAP)),
+      axis,
+    );
+    if (axis !== "native")
+      assert.ok(
+        observations.every((observation) => !observation.phrasings.includes(GAP)),
+        axis,
+      );
   }
 });
 
@@ -333,7 +343,10 @@ test("native project witnesses survive quote limits without multiplying observer
 
 test("repeated native evidence retains the highest eligible recurrence risk", async () => {
   for (const persisted of [false, true]) {
-    for (const risks of [["low", "high"], ["high", "low"]]) {
+    for (const risks of [
+      ["low", "high"],
+      ["high", "low"],
+    ]) {
       const repeated = evidence("C", "P");
       repeated.gaps = risks.map((recurrenceRisk, index) => ({
         ...repeated.gaps[0],
@@ -376,7 +389,12 @@ function emittedEvidence(summary) {
 }
 
 for (const lane of ["gap", "positive", "negative"]) {
-  for (const [minGapEvidence, minGapProjects, maximumQuotes] of [[2, 0, 6], [2, 3, 6], [7, 3, 9], [2, 8, 9]]) {
+  for (const [minGapEvidence, minGapProjects, maximumQuotes] of [
+    [2, 0, 6],
+    [2, 3, 6],
+    [7, 3, 9],
+    [2, 8, 9],
+  ]) {
     test(`emitted ${lane} witnesses satisfy observer=${minGapEvidence} and project=${minGapProjects} floors`, () => {
       const repo = makeRepo({ "AGENTS.md": "# Memory\n\n- Existing rule.\n" });
       const related = Array.from({ length: 8 }, (_, index) => evidence(`F${index}`, "P"));
@@ -464,14 +482,18 @@ for (const boundary of ["recording", "normalization", "consolidation"]) {
         const independent = evidence("X", "X");
         independent.gaps[0].recurrenceRisk = "low";
         for (const record of [second, independent]) ctx.config.state.writeEvidence(record.transcript.id, record);
-        const summary = await foldForRun(ctx, { path: "AGENTS.md", units: [] }, "memory", [], [
-          second.transcript,
-          independent.transcript,
-        ]);
+        const summary = await foldForRun(
+          ctx,
+          { path: "AGENTS.md", units: [] },
+          "memory",
+          [],
+          [second.transcript, independent.transcript],
+        );
         assert.equal(summary.gaps[0].sessions, 2);
         assert.equal(summary.gaps[0].recurrenceRisk, stale ? "low" : "high");
-        const observations = Object.values(ctx.config.state.readGapLedger().entries)
-          .flatMap((candidate) => Object.values(candidate.sessions));
+        const observations = Object.values(ctx.config.state.readGapLedger().entries).flatMap((candidate) =>
+          Object.values(candidate.sessions),
+        );
         if (stale) {
           const history = observations.find((observation) => observation.contentDigest === "old-child");
           assert.equal(history.sourceSessionId, "C");

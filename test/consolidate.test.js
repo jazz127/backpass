@@ -168,7 +168,13 @@ test("consolidation sees fresh native contributions and counts related observers
   const unrelated = record("Y", UNRELATED);
   const records = [parent, child, independent, unrelated];
   for (const evidence of records) h.state.writeEvidence(evidence.transcript.id, evidence);
-  await foldForRun(h.ctx, memoryFile, "h1", [], records.map((evidence) => evidence.transcript));
+  await foldForRun(
+    h.ctx,
+    memoryFile,
+    "h1",
+    [],
+    records.map((evidence) => evidence.transcript),
+  );
 
   const prompt = fs.readFileSync(path.join(h.state.root, "prompts", "consolidate-gaps.md"), "utf8");
   assert.ok(prompt.includes(`(sessions=2) ${freshWording}`));
@@ -201,10 +207,13 @@ test("restored ancestry resolves consolidation observers without refreshing stal
     h.state.writeEvidence(evidence.transcript.id, evidence);
   }
   const currentChild = { ...lostParent.transcript, corroborationIdentity: "P" };
-  const summary = await foldForRun(h.ctx, memoryFile, "h2", [], [
-    ...fresh.map((evidence) => evidence.transcript),
-    currentChild,
-  ]);
+  const summary = await foldForRun(
+    h.ctx,
+    memoryFile,
+    "h2",
+    [],
+    [...fresh.map((evidence) => evidence.transcript), currentChild],
+  );
   assert.equal(summary.analyzedSessions, 3, "the child's h1 analysis remains stale");
   assert.equal(summary.gaps[0].sessions, 2);
   assert.equal(summary.sourceObservers[history.source], "P");

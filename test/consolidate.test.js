@@ -150,3 +150,78 @@ test("fewer than two open gaps never spends a model call", async () => {
   const summary = await foldForRun(h.ctx, memoryFile, "h1", [], h.transcripts);
   assert.match(String(summary.consolidation.skipped), /fewer than two/);
 });
+
+test("consolidation sees fresh native contributions and counts related observers once", async () => {
+  const oldWording = "Read docs/db.md before writing queries.";
+  const freshWording = "Read docs/db.md before writing any production queries.";
+  const oldChild = record("C", oldWording);
+  Object.assign(oldChild.transcript, { contentSignature: "child-v1" });
+  oldChild.key = evidenceKey(oldChild.transcript, "h1");
+  const h = harness([oldChild], { merges: [] });
+  await foldForRun(h.ctx, memoryFile, "h1", [], [oldChild.transcript]);
+
+  const parent = record("P", freshWording);
+  const child = record("C", freshWording);
+  Object.assign(child.transcript, { contentSignature: "child-v2", corroborationIdentity: "P" });
+  child.key = evidenceKey(child.transcript, "h1");
+  const independent = record("X", freshWording);
+  const unrelated = record("Y", UNRELATED);
+  const records = [parent, child, independent, unrelated];
+  for (const evidence of records) h.state.writeEvidence(evidence.transcript.id, evidence);
+  await foldForRun(
+    h.ctx,
+    memoryFile,
+    "h1",
+    [],
+    records.map((evidence) => evidence.transcript),
+  );
+
+  const prompt = fs.readFileSync(path.join(h.state.root, "prompts", "consolidate-gaps.md"), "utf8");
+  assert.ok(prompt.includes(`(sessions=2) ${freshWording}`));
+  assert.ok(!prompt.includes(oldWording));
+});
+
+test("restored ancestry resolves consolidation observers without refreshing stale analysis history", async () => {
+  const parent = record("P", SIGHTING_A);
+  const child = record("C", SIGHTING_A);
+  Object.assign(child.transcript, { corroborationIdentity: "P", contentSignature: "unchanged-child" });
+  child.key = evidenceKey(child.transcript, "h1");
+  const h = harness([parent, child], { merges: [] });
+  await foldForRun(h.ctx, memoryFile, "h1", [], [parent.transcript, child.transcript]);
+
+  const lostParent = { ...child, transcript: { ...child.transcript, corroborationIdentity: "C" } };
+  lostParent.key = evidenceKey(lostParent.transcript, "h1");
+  h.state.writeEvidence(lostParent.transcript.id, lostParent);
+  await foldForRun(h.ctx, memoryFile, "h1", [], [lostParent.transcript]);
+  const history = structuredClone(
+    Object.values(h.state.readGapLedger().entries)
+      .flatMap((entry) => Object.values(entry.sessions))
+      .find((observation) => observation.sourceSessionId === "C"),
+  );
+  assert.equal(history.observerId, "C");
+
+  const fresh = [record("P", SIGHTING_A), record("X", SIGHTING_A), record("Y", UNRELATED)];
+  for (const evidence of fresh) {
+    evidence.memoryHash = "h2";
+    evidence.key = evidenceKey(evidence.transcript, "h2");
+    h.state.writeEvidence(evidence.transcript.id, evidence);
+  }
+  const currentChild = { ...lostParent.transcript, corroborationIdentity: "P" };
+  const summary = await foldForRun(
+    h.ctx,
+    memoryFile,
+    "h2",
+    [],
+    [...fresh.map((evidence) => evidence.transcript), currentChild],
+  );
+  assert.equal(summary.analyzedSessions, 3, "the child's h1 analysis remains stale");
+  assert.equal(summary.gaps[0].sessions, 2);
+  assert.equal(summary.sourceObservers[history.source], "P");
+  const prompt = fs.readFileSync(path.join(h.state.root, "prompts", "consolidate-gaps.md"), "utf8");
+  assert.ok(prompt.includes(`(sessions=2) ${SIGHTING_A}`));
+  assert.ok(!prompt.includes(`(sessions=3) ${SIGHTING_A}`));
+  const durable = Object.values(h.state.readGapLedger().entries)
+    .flatMap((entry) => Object.values(entry.sessions))
+    .find((observation) => observation.sourceSessionId === "C");
+  assert.deepEqual(durable, history, "resolving the view must preserve every durable contribution stamp");
+});

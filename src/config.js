@@ -69,8 +69,8 @@ export const DEFAULT_CONFIG = {
   maxEditsPerRun: null,
   minGapEvidence: 2,
   /**
-   * Gap observations persist across runs in `.backpass/gap-ledger.json`, but only
-   * observations from the current selected sample count toward `minGapEvidence`.
+   * Retirement age for durable gap sightings; identity and admission rules live in
+   * `src/gap-ledger.js`.
    * A session's observations retire past this age (a duration like 90d, `all` to never expire).
    */
   gapLedgerMaxAge: "90d",
@@ -119,6 +119,8 @@ export const DEFAULT_CONFIG = {
      * is refused by name. Absolute paths; `~` is expanded.
      */
     opencodeStores: [],
+    /** Include Oh My Pi's default session store in Pi discovery; opt-in only. */
+    includeOmp: false,
     minUserTurns: 2,
     includeCursorIde: false,
   },
@@ -473,6 +475,9 @@ function validate(config, { kind = "project", repoRoot = null } = {}) {
   }
   config.discovery.harnesses = config.discovery.harnesses.filter((h) => known.has(h));
   parseSince(config.discovery.since);
+  if (typeof config.discovery.includeOmp !== "boolean") {
+    throw new UserError("config.discovery.includeOmp must be a boolean");
+  }
   if (!Array.isArray(config.discovery.cloneRoots) || config.discovery.cloneRoots.some((p) => typeof p !== "string")) {
     throw new UserError("config.discovery.cloneRoots must be an array of paths");
   }

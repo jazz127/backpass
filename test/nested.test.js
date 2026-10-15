@@ -465,6 +465,115 @@ test("the fold keeps only the gap clusters this file owns, and names where the o
   assert.ok(!("routedGaps" in unrouted) && !("sourceSessions" in unrouted), "no routing, no new summary fields");
 });
 
+test("an unknown native observer beside an API child keeps both the fold and proposal root-owned", () => {
+  const repo = makeRepo({
+    "AGENTS.md": "# Root\n\n- Use pnpm.\n",
+    "apps/api/AGENTS.md": "# API\n\n- Keep handlers small.\n",
+  });
+  const child = { identity: "native-api-child", cwd: repo.root };
+  const attribution = new Map([
+    [
+      child.identity,
+      workedPaths(child, [{ kind: "tool", input: { path: "apps/api/handler.ts" } }], checkoutRoots(repo)),
+    ],
+  ]);
+  const observations = [
+    {
+      proposedInstruction: API_GAP,
+      sessionId: "observer-api",
+      sourceSessionId: child.identity,
+      sightingIds: [child.identity],
+      source: "pi · api-child · 2026-08-02",
+      quote: "API child quote",
+    },
+    {
+      proposedInstruction: API_GAP,
+      sessionId: "legacy-observer",
+      source: "pi · legacy-root · 2026-08-01",
+      quote: "unknown native quote",
+    },
+  ];
+  const rootRoute = routingFor([API], attribution, "AGENTS.md", null);
+  const rootSummary = foldEvidence([], {
+    minGapEvidence: 2,
+    gapObservations: observations,
+    route: rootRoute,
+  });
+  assert.equal(rootSummary.gaps[0].sessions, 2);
+  for (const weight of [null, API.path]) {
+    const route = { ...rootRoute, weight, rootOwnedGaps: rootSummary.rootOwnedGaps };
+    const summary = foldEvidence([], { minGapEvidence: 2, gapObservations: observations, route });
+    if (weight === null) assert.equal(summary.gaps.length, 1);
+    else {
+      assert.deepEqual(summary.gaps, []);
+      assert.equal(summary.routedGaps[0].owner, "AGENTS.md");
+    }
+    const staged = stageAndMeasure({
+      repo,
+      memoryPath: weight ?? "AGENTS.md",
+      edit: (root) => writeIn(root, weight ?? "AGENTS.md", (text) => `${text}- ${API_GAP}\n`),
+    });
+    const result = buildProposal(
+      {
+        edits: [
+          {
+            changes: staged.measured.changes.map((change) => change.id),
+            kind: "add",
+            title: "API contract",
+            evidence: observations.map((observation) => ({
+              polarity: "negative",
+              text: observation.quote,
+              source: observation.source,
+            })),
+          },
+        ],
+      },
+      {
+        memoryFile: staged.memoryFile,
+        measured: staged.measured,
+        config: { budgetTokens: 5000, maxEditsPerRun: 5, minGapEvidence: 2, skillsDir: ".agents/skills" },
+        repo,
+        summary,
+        routing: route,
+      },
+    );
+    if (weight === null) {
+      assert.deepEqual(result.violations, []);
+      assert.equal(result.proposal.edits[0].transcripts, 2);
+    } else {
+      assert.equal(result.proposal.edits.length, 0);
+      assert.ok(
+        result.violations.some((violation) => violation.includes("cross-cutting evidence belongs in AGENTS.md")),
+      );
+    }
+    const withoutRootOverride = buildProposal(
+      {
+        edits: [
+          {
+            changes: staged.measured.changes.map((change) => change.id),
+            kind: "add",
+            title: "API contract",
+            evidence: observations.map((observation) => ({
+              polarity: "negative",
+              text: observation.quote,
+              source: observation.source,
+            })),
+          },
+        ],
+      },
+      {
+        memoryFile: staged.memoryFile,
+        measured: staged.measured,
+        config: { budgetTokens: 5000, maxEditsPerRun: 5, minGapEvidence: 2, skillsDir: ".agents/skills" },
+        repo,
+        summary: { ...summary, rootOwnedGaps: [] },
+        routing: { ...route, rootOwnedGaps: [] },
+      },
+    );
+    assert.equal(withoutRootOverride.proposal.edits.length, weight === null ? 1 : 0);
+  }
+});
+
 test("mixed-directory sessions never enter a nested analysis corpus or own its gap", async () => {
   const transcripts = ["api-1", "both", "root-file-and-api"].map((identity) => ({ identity }));
   const { corpora } = await nestedCorpora({}, [API], transcripts, ATTRIBUTION);

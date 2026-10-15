@@ -145,6 +145,183 @@ test("current records and legacy gap observations share one label per session", 
   assert.deepEqual(new Set(Object.values(summary.sourceProjects)), new Set(["repo-a", "repo-b"]));
 });
 
+test("direct fold rejects a selected representative's inconsistent historical observer before clustering", () => {
+  const gap = "Read database documentation before writing queries.";
+  const current = (id, observer) =>
+    record(id, {
+      transcript: {
+        id,
+        identity: id,
+        nativeId: id,
+        harness: "pi",
+        corroborationIdentity: observer,
+        startedAt: Date.parse("2026-08-01T00:00:00Z"),
+      },
+      negative: [{ instruction: "AG-001", quote: `current mistake ${id}`, class: "non-compliance" }],
+    });
+  const historical = {
+    proposedInstruction: gap,
+    sessionId: "P",
+    sourceSessionId: "G",
+    sightingIds: ["P", "G"],
+    source: "pi · G · 2026-08-01",
+    quote: "historical G quote",
+  };
+  const independent = {
+    proposedInstruction: gap,
+    sessionId: "X",
+    sourceSessionId: "X",
+    sightingIds: ["X"],
+    source: "pi · X · 2026-08-01",
+    quote: "independent X quote",
+  };
+  const route = { weight: null, rootPath: "AGENTS.md", ownerOf: () => null };
+  for (const matchingGap of [false, true]) {
+    const fresh = {
+      proposedInstruction: gap,
+      sessionId: "L",
+      sourceSessionId: "G",
+      sightingIds: ["G"],
+      source: historical.source,
+      quote: "fresh G quote",
+    };
+    const summary = foldEvidence([current("P", "P"), current("G", "L"), current("X", "X")], {
+      minGapEvidence: 2,
+      memoryFile,
+      route,
+      gapObservations: [historical, independent, ...(matchingGap ? [fresh] : [])],
+    });
+    assert.equal(summary.sourceObservers[historical.source], "L");
+    assert.equal(summary.totals.gapSightings, matchingGap ? 2 : 1);
+    assert.equal(summary.gaps.length, matchingGap ? 1 : 0);
+    if (matchingGap) {
+      assert.equal(summary.gaps[0].sessions, 2);
+      assert.deepEqual(summary.gaps[0].quotes.map((quote) => quote.text).sort(), [
+        "fresh G quote",
+        "independent X quote",
+      ]);
+    }
+    assert.ok(!summary.rootOwnedGaps.flat().some((item) => item.sessionId === "P"));
+  }
+  const ambiguous = foldEvidence([current("G", "L"), current("G", "M")], {
+    gapObservations: [{ ...historical, sessionId: "L" }, independent],
+    minGapEvidence: 2,
+  });
+  assert.equal(ambiguous.totals.gapSightings, 1);
+  assert.deepEqual(ambiguous.gaps, []);
+
+  for (const representativeSelected of [false, true]) {
+    const summary = foldEvidence(
+      [current("P", "P"), current("X", "X"), ...(representativeSelected ? [current("G", "L")] : [])],
+      {
+        gapObservations: [{ ...historical, sessionId: representativeSelected ? "L" : "P" }, independent],
+        minGapEvidence: 2,
+        route,
+      },
+    );
+    assert.equal(summary.gaps[0].sessions, 2);
+    assert.equal(summary.sourceObservers[historical.source], representativeSelected ? "L" : "P");
+  }
+});
+
+test("direct fold resolves retained native aliases without admitting incompatible occupied observers", () => {
+  const gap = "Read database documentation before writing queries.";
+  const current = (id, observer) =>
+    record(id, {
+      transcript: {
+        id,
+        identity: id,
+        nativeId: id,
+        harness: "pi",
+        corroborationIdentity: observer,
+        startedAt: Date.parse("2026-08-01T00:00:00Z"),
+      },
+    });
+  const historical = {
+    proposedInstruction: gap,
+    sessionId: "P",
+    sourceSessionId: "G",
+    sightingIds: ["P", "G"],
+    source: "pi · G · 2026-08-01",
+    quote: "historical G quote",
+  };
+  const native = {
+    proposedInstruction: gap,
+    sessionId: "H",
+    sourceSessionId: "H",
+    sightingIds: ["H"],
+    source: "pi · H · 2026-08-01",
+    quote: "valid H quote",
+    domain: "orchestration",
+  };
+  const independent = {
+    proposedInstruction: gap,
+    sessionId: "X",
+    sourceSessionId: "X",
+    sightingIds: ["X"],
+    source: "pi · X · 2026-08-01",
+    quote: "valid X quote",
+  };
+  const duplicate = { ...native, quote: "second valid H quote", domain: "project" };
+  const summary = foldEvidence([current("P", "P"), current("G", "L"), current("H", "P"), current("X", "X")], {
+    minGapEvidence: 2,
+    gapObservations: [historical, native, duplicate, independent],
+    route: { weight: null, rootPath: "AGENTS.md", ownerOf: () => null },
+  });
+  assert.equal(summary.gaps[0].sessions, 2);
+  assert.deepEqual(summary.gaps[0].quotes.map((quote) => quote.text).sort(), ["valid H quote", "valid X quote"]);
+  assert.equal(summary.sourceObservers[native.source], "P");
+  const singleton = foldEvidence([current("H", "P")], {
+    minGapEvidence: 2,
+    gapObservations: [native, duplicate],
+  });
+  assert.deepEqual(singleton.gaps, []);
+  assert.equal(singleton.totals.droppedGapSingletons, 1);
+});
+
+test("direct fold resolves source-qualified collision records to one validated observer", () => {
+  const gap = "Read database documentation before writing queries.";
+  const current = (id, observer) =>
+    record(id, {
+      transcript: {
+        id,
+        identity: id,
+        nativeId: id,
+        harness: "pi",
+        corroborationIdentity: observer,
+        startedAt: Date.parse("2026-08-01T00:00:00Z"),
+      },
+    });
+  const fresh = {
+    proposedInstruction: gap,
+    sessionId: JSON.stringify(["P", "P"]),
+    sourceSessionId: "P",
+    sightingIds: ["P"],
+    source: "pi · P · 2026-08-01",
+    quote: "fresh P quote",
+  };
+  const independent = {
+    proposedInstruction: gap,
+    sessionId: "X",
+    sourceSessionId: "X",
+    sightingIds: ["X"],
+    source: "pi · X · 2026-08-01",
+    quote: "fresh X quote",
+  };
+  const summary = foldEvidence([current("P", "P"), current("X", "X")], {
+    gapObservations: [fresh, independent],
+    minGapEvidence: 2,
+  });
+  assert.equal(summary.gaps[0].sessions, 2);
+  assert.equal(summary.sourceObservers[fresh.source], "P");
+  const singleton = foldEvidence([current("P", "P")], {
+    gapObservations: [fresh, { ...fresh, sessionId: "P" }],
+    minGapEvidence: 2,
+  });
+  assert.deepEqual(singleton.gaps, []);
+  assert.equal(singleton.totals.droppedGapSingletons, 1);
+});
+
 test("instructions with no evidence still appear - they are the removal candidates", () => {
   const summary = foldEvidence([record("s1", { positive: [{ instruction: "AG-001", quote: "q" }] })], { memoryFile });
 
@@ -531,6 +708,75 @@ test("harm-class negatives are counted per distinct session, and only explicit h
   assert.equal(rows.get("AG-001").harmSessions, 2, "two distinct sessions, however many harm items each filed");
   assert.equal(rows.get("AG-001").negative, 4);
   assert.equal(rows.get("AG-002").harmSessions, 0, "non-compliance and unclassified never count as harm");
+});
+test("OMP subagents share corroboration while relevance remains per file", () => {
+  const startedAt = Date.parse("2026-08-01T00:00:00Z");
+  const parent = {
+    id: "pi-parent",
+    nativeId: "parent-native",
+    identity: "pi-file-parent",
+    corroborationIdentity: "pi-parent-session",
+    corroborationNativeId: "parent-native",
+    corroborationStartedAt: startedAt,
+    harness: "pi",
+    startedAt,
+    interaction: "interactive",
+  };
+  const child = {
+    id: "pi-child",
+    nativeId: "child-native",
+    identity: "pi-file-child",
+    parentSessionId: "parent-native",
+    corroborationIdentity: "pi-parent-session",
+    corroborationNativeId: "parent-native",
+    corroborationStartedAt: startedAt,
+    harness: "pi",
+    startedAt: startedAt + 86_400_000,
+    interaction: "non-interactive",
+  };
+  const independent = {
+    id: "pi-independent",
+    nativeId: "independent-native",
+    identity: "pi-file-independent",
+    corroborationIdentity: "pi-independent-session",
+    corroborationNativeId: "independent-native",
+    corroborationStartedAt: startedAt + 2_000,
+    harness: "pi",
+    startedAt: startedAt + 2_000,
+    interaction: "interactive",
+  };
+  const observed = (transcript) =>
+    record(transcript.id, {
+      transcript,
+      negative: [
+        { instruction: "AG-001", quote: `harm ${transcript.id}`, class: "harm" },
+        { instruction: "AG-002", quote: `ignored ${transcript.id}`, class: "non-compliance" },
+      ],
+      gaps: [{ proposedInstruction: "Read the deployment runbook first.", quote: `gap ${transcript.id}` }],
+    });
+
+  const parentAndChild = foldEvidence([observed(parent), observed(child)], { minGapEvidence: 2, memoryFile });
+  const oneObserver = new Map(parentAndChild.instructions.map((row) => [row.instruction, row]));
+  assert.equal(parentAndChild.gaps.length, 0, "parent and subagent cannot clear the two-session floor");
+  assert.equal(parentAndChild.totals.droppedGapSingletons, 1);
+  assert.deepEqual(parentAndChild.sources, ["pi · parent-native · 2026-08-01", "pi · child-native · 2026-08-02"]);
+  assert.deepEqual(Object.values(parentAndChild.sourceObservers), ["pi-parent-session", "pi-parent-session"]);
+  assert.equal(oneObserver.get("AG-001").harmSessions, 1);
+  assert.equal(oneObserver.get("AG-002").nonComplianceSessions, 1);
+  assert.equal(oneObserver.get("AG-001").sessions, 2, "relevance still measures both analyzed files");
+  assert.equal(oneObserver.get("AG-001").relevance, 1);
+
+  const independentlyCorroborated = foldEvidence([observed(parent), observed(child), observed(independent)], {
+    minGapEvidence: 2,
+    memoryFile,
+  });
+  const twoObservers = new Map(independentlyCorroborated.instructions.map((row) => [row.instruction, row]));
+  assert.equal(independentlyCorroborated.gaps.length, 1);
+  assert.equal(independentlyCorroborated.gaps[0].sessions, 2);
+  assert.equal(independentlyCorroborated.sources.length, 3);
+  assert.equal(twoObservers.get("AG-001").harmSessions, 2);
+  assert.equal(twoObservers.get("AG-002").nonComplianceSessions, 2);
+  assert.equal(twoObservers.get("AG-001").sessions, 3);
 });
 
 test("failed-trigger citations count per skill and reach the synthesis prompt with the cluster", () => {

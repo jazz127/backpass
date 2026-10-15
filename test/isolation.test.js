@@ -377,7 +377,7 @@ test("a later revision citing a revoked gap never carries the revoked wording in
       },
     ],
   });
-  await foldForRun(
+  const summary = await foldForRun(
     {
       config: { ...h.config, minGapEvidence: 2, gapLedgerMaxAge: "90d" },
       repo: { root: h.root },
@@ -391,65 +391,81 @@ test("a later revision citing a revoked gap never carries the revoked wording in
   const prompt = recordedCalls().at(-1).prompt;
   assert.match(prompt, /Bind publication attestation/);
   assert.doesNotMatch(prompt, /Revoked old wording|revoked-skill/);
-  const observation = h.state.readGapLedger().entries.revoked.sessions[revised.identity];
+  const observations = Object.values(h.state.readGapLedger().entries.revoked.sessions);
+  const historical = observations.find((observation) => observation.revision === "rev-1");
+  assert.deepEqual(historical.phrasings, ["Revoked old wording"]);
+  assert.equal(historical.evidenceKey, "old");
+  assert.equal(historical.coveredBySkill, "revoked-skill");
+  const observation = observations.find((candidate) => candidate.revision === "rev-2");
+  assert.equal(observation.sourceSessionId, revised.identity);
+  assert.equal(observation.evidenceKey, evidenceKey(revised, "memory-a"));
   assert.deepEqual(observation.phrasings, ["Bind publication attestation to its exact commit."]);
   assert.equal(observation.coveredBySkill, undefined);
+  assert.equal(summary.analyzedSessions, 1);
+  assert.deepEqual(summary.gaps, [], "revoked history cannot supply a second corroborating session");
 });
 
-test("a grown native session keeps its unmentioned sighting on disk but out of prompts", async () => {
-  const h = setup({ agent: "claude", model: null, effort: null });
-  const grown = {
-    harness: "claude",
-    id: "native-a",
-    nativeId: "native-a",
-    interaction: "interactive",
-    mtimeMs: 2,
-    bytes: 200,
-  };
-  const identity = (grown.identity = transcriptIdentity(grown));
-  const staleSighting = {
-    sourceKind: "native",
-    contentDigest: "1:100",
-    firstObservedAt: new Date().toISOString(),
-    phrasings: ["Stale grown gap"],
-  };
-  h.state.writeGapLedger({
-    version: 1,
-    entries: {
-      stale: {
-        id: "stale",
-        memoryPath: "AGENTS.md",
-        proposedInstruction: "Stale grown gap",
-        sessions: { [identity]: staleSighting },
+for (const related of [false, true])
+  test(`a grown ${related ? "OMP child" : "native session"} keeps its unmentioned sighting on disk but out of prompts`, async () => {
+    const h = setup({ agent: "claude", model: null, effort: null });
+    const grown = {
+      harness: related ? "pi" : "claude",
+      ...(related ? { parentSessionId: "parent", corroborationIdentity: "omp-parent" } : {}),
+      id: "native-a",
+      nativeId: "native-a",
+      identity: "",
+      interaction: "interactive",
+      mtimeMs: 2,
+      bytes: 200,
+    };
+    const identity = (grown.identity = transcriptIdentity(grown));
+    const observer = grown.corroborationIdentity || identity;
+    const staleSighting = {
+      ...(related ? { sourceSessionId: identity, sightingIds: [identity] } : {}),
+      sourceKind: "native",
+      contentDigest: "1:100",
+      firstObservedAt: new Date().toISOString(),
+      phrasings: ["Stale grown gap"],
+    };
+    h.state.writeGapLedger({
+      version: 1,
+      entries: {
+        stale: {
+          id: "stale",
+          memoryPath: "AGENTS.md",
+          proposedInstruction: "Stale grown gap",
+          sessions: { [observer]: staleSighting },
+        },
       },
-    },
+    });
+    h.state.writeEvidence(grown, {
+      status: "ok",
+      transcript: grown,
+      memoryPath: "AGENTS.md",
+      memoryHash: "memory-a",
+      key: evidenceKey(grown, "memory-a"),
+      positive: [],
+      negative: [],
+      gaps: ["Bind publication attestation to its exact commit.", "Keep credential seats isolated per run."].map(
+        (proposedInstruction) => ({
+          proposedInstruction,
+          mistake: "current mistake",
+          quote: "I checked the sample.",
+          recurrenceRisk: "high",
+        }),
+      ),
+    });
+    await foldForRun(
+      { config: { ...h.config, minGapEvidence: 2, gapLedgerMaxAge: "90d" }, repo: { root: h.root } },
+      h.memoryFile,
+      "memory-a",
+      [],
+      [grown],
+    );
+    const prompt = recordedCalls().at(-1).prompt;
+    assert.match(prompt, /Bind publication attestation/);
+    assert.doesNotMatch(prompt, /Stale grown gap/);
+    assert.deepEqual(h.state.readGapLedger().entries.stale.sessions, {
+      [observer]: { ...staleSighting, sourceSessionId: identity, sightingIds: [identity] },
+    });
   });
-  h.state.writeEvidence(grown, {
-    status: "ok",
-    transcript: grown,
-    memoryPath: "AGENTS.md",
-    memoryHash: "memory-a",
-    key: evidenceKey(grown, "memory-a"),
-    positive: [],
-    negative: [],
-    gaps: ["Bind publication attestation to its exact commit.", "Keep credential seats isolated per run."].map(
-      (proposedInstruction) => ({
-        proposedInstruction,
-        mistake: "current mistake",
-        quote: "I checked the sample.",
-        recurrenceRisk: "high",
-      }),
-    ),
-  });
-  await foldForRun(
-    { config: { ...h.config, minGapEvidence: 2, gapLedgerMaxAge: "90d" }, repo: { root: h.root } },
-    h.memoryFile,
-    "memory-a",
-    [],
-    [grown],
-  );
-  const prompt = recordedCalls().at(-1).prompt;
-  assert.match(prompt, /Bind publication attestation/);
-  assert.doesNotMatch(prompt, /Stale grown gap/);
-  assert.deepEqual(h.state.readGapLedger().entries.stale.sessions, { [identity]: staleSighting });
-});

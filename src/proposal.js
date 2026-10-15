@@ -105,7 +105,7 @@ export class ProposalViolation extends Error {
   }
 }
 
-function normalizeEdit(raw, index, knownSources = null) {
+function normalizeEdit(raw, index, knownSources = null, sourceObservers = null) {
   const kind = String(raw?.kind || "").toLowerCase();
   const refs = Array.isArray(raw?.changes) ? raw.changes : Array.isArray(raw?.hunks) ? raw.hunks : [];
   const normalizedEvidence = normalizeEvidence(raw?.evidence);
@@ -122,9 +122,9 @@ function normalizeEdit(raw, index, knownSources = null) {
     instructions: Array.isArray(raw?.instructions) ? raw.instructions.map(String) : [],
     evidence,
     // Corroboration is measured from the edit's normalized quotes, never from a
-    // model-reported count. When the fold handed over this run's source labels,
-    // only those labels count - a typed-but-never-issued source is not a session.
-    transcripts: countSources(normalizedEvidence, knownSources),
+    // model-reported count. Fold-issued labels admit citations; `sourceObservers`
+    // collapses related native transcripts before counting independent observers.
+    transcripts: countSources(normalizedEvidence, knownSources, sourceObservers),
   };
 }
 
@@ -139,11 +139,12 @@ function normalizeEvidence(evidence) {
     }));
 }
 
-function countSources(evidence, known = null) {
+function countSources(evidence, known = null, observers = null) {
   if (!Array.isArray(evidence)) return 0;
-  const labels = new Set(evidence.map((e) => normalizeSourceLabel(e?.source)).filter(Boolean));
-  if (!known) return labels.size;
-  return [...labels].filter((label) => known.has(label)).length;
+  const labels = [...new Set(evidence.map((e) => normalizeSourceLabel(e?.source)).filter(Boolean))];
+  const admitted = known ? labels.filter((label) => known.has(label)) : labels;
+  if (!observers) return admitted.length;
+  return new Set(admitted.flatMap((label) => [observers[label]].flat().filter(Boolean))).size;
 }
 
 /** The del-line texts of a hunk that are not carried by `lineCounts` (blank lines ignored). */
@@ -388,7 +389,7 @@ export function buildProposal(rawResult, context) {
   const knownSources = Array.isArray(summary?.sources)
     ? new Set(summary.sources.map(normalizeSourceLabel).filter(Boolean))
     : null;
-  const edits = rawEdits.map((raw, i) => normalizeEdit(raw, i, knownSources));
+  const edits = rawEdits.map((raw, i) => normalizeEdit(raw, i, knownSources, summary?.sourceObservers));
   const changesById = new Map(measured.changes.map((c) => [c.id, c]));
 
   // Skill description lines are always loaded, so they sit under the same cap as the
@@ -602,9 +603,9 @@ export function buildProposal(rawResult, context) {
     }
 
     // Corroboration is measured, not declared, and it covers the whole always-loaded
-    // surface: adding, rewriting and removing text all clear the same session floor.
+    // surface: adding, rewriting and removing text all clear the same observer floor.
     // Asking instead whether a rewrite "really" adds an instruction requires a semantic
-    // text classifier. Counting the distinct sessions behind an edit's own quotes asks
+    // text classifier. Counting the distinct observers behind an edit's own quotes asks
     // nothing of the text, so there is no shape to game. Extract and move keep every line
     // on the always-loaded surface, so they stay exempt; a removal keeps the harm floor
     // below on top of this one.
@@ -634,14 +635,18 @@ export function buildProposal(rawResult, context) {
     if (routing && !preservesAlwaysLoaded(edit.kind) && hunks.some((h) => h.added > 0 && h.removed === 0)) {
       const sessions = [
         ...new Set(
-          edit.evidence.map((item) => summary?.sourceSessions?.[normalizeSourceLabel(item.source)]).filter(Boolean),
+          edit.evidence
+            .flatMap((item) => [summary?.sourceSessions?.[normalizeSourceLabel(item.source)]].flat())
+            .filter(Boolean),
         ),
       ];
-      const sightings = edit.evidence.map((item) => ({
-        sessionId: summary?.sourceSessions?.[normalizeSourceLabel(item.source)],
-        quote: item.text,
-      }));
-      const owner = rootOwnsGap(sightings, routing.rootOwnedGaps)
+      const sightings = edit.evidence.flatMap((item) =>
+        [summary?.sourceSessions?.[normalizeSourceLabel(item.source)]]
+          .flat()
+          .filter(Boolean)
+          .map((sessionId) => ({ sessionId, quote: item.text })),
+      );
+      const owner = rootOwnsGap(sightings, routing.rootOwnedGaps ?? summary?.rootOwnedGaps)
         ? routing.rootPath
         : (routing.ownerOf(sessions) ?? routing.rootPath);
       const here = routing.weight ?? routing.rootPath;

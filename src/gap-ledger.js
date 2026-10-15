@@ -1,18 +1,18 @@
 import { parseMemoryUnits, similarity } from "./memory.js";
 import { parseSince } from "./config.js";
 import { sha256 } from "./state.js";
+import { corroborationIdentityOf } from "./transcript.js";
 
 /**
  * Durable gap corroboration across runs (`.backpass/gap-ledger.json`).
  *
- * The fold stage only promotes a gap once `minGapEvidence` distinct sessions report it.
- * Counting those sessions from the evidence that happens to be on disk is lossy: a
+ * The fold stage only promotes a gap once `minGapEvidence` distinct observers report it.
+ * Counting those observers from the evidence that happens to be on disk is lossy: a
  * transcript's evidence file is rewritten every time it is re-analyzed against a changed
  * memory file (every apply changes the hash), and the analysis model rephrases gaps
  * between runs, so two observations of one gap rarely line up in a single fold. This
- * ledger keeps every gap observation, keyed by gap identity and session, so observations
- * collected on different runs can still reach the bar when their sessions are together in
- * a later run's selected sample.
+ * ledger preserves gap history across runs, so observations collected separately can
+ * still reach the bar when their observers are together in a later run's selected sample.
  *
  * Identity and freshness rules:
  *
@@ -30,17 +30,21 @@ import { sha256 } from "./state.js";
  *  - Every observation carries the `domain` the analysis judged: `orchestration` when the
  *    mistake was not caused by this repository but by an external agent harness or tooling
  *    that orchestrated the task, `project` for every other mistake.
- *    Each observation stores that vote. The fold clusters first and decides domain
- *    afterward (majority orchestration withholds a cluster from proposals; a mixed
- *    cluster stays visible). A missing domain counts as project, so evidence from
- *    before the field existed keeps its old behavior.
- *  - Sessions are keyed by canonical transcript identity (with the legacy id as a fallback),
- *    so re-analyzing or re-sampling the same source session overwrites its observation and
- *    never adds a count. Persisted observations only contribute when that identity belongs
- *    to the current selected sample, so sessions outside the window or cap cannot skew fold.
+ *    Domain voting is owned by `clusterDomainVote` in `src/fold.js`. A missing domain
+ *    counts as project, so evidence from before the field existed keeps its old behavior.
+ *  - Observations normally use discovery's shared observer identity for linked OMP
+ *    descendants, the transcript's own otherwise (`corroborationIdentityOf`). Linkage
+ *    rules live in `src/discovery/adapters/pi.js`.
+ *    Older per-file keys migrate only when selected native provenance and any occupied
+ *    destination are compatible; legacy id keys additionally require unambiguous
+ *    `legacyIds`. Incompatible history stays separately keyed, and recording uses a
+ *    native or source-qualified key rather than overwriting it. Storage keys do not
+ *    grant extra observer votes. Persisted observations only contribute when their
+ *    admitted observer belongs to the current selected sample, so observers outside the
+ *    window or cap cannot skew fold.
  *  - A gap is a fact about its session: re-analysis that no longer mentions it is model
- *    noise, not the session changing, so observations are only ever replaced, not removed
- *    by absence. They retire in exactly two ways: the memory surface gains content
+ *    noise, not the session changing, so absence never removes history. Sightings retire
+ *    in exactly two ways: the memory surface gains content
  *    that covers the gap - a memory-file instruction or a skill's description/body
  *    (`GAP_COVERED_THRESHOLD`, the `reanchor` bar) - or the sighting
  *    has waited longer than `gapLedgerMaxAge` for a partner, counted from when backpass
@@ -59,13 +63,18 @@ export const GAP_SIMILARITY_THRESHOLD = 0.45;
 /** A memory-file instruction this similar to a gap's proposal covers it. */
 export const GAP_COVERED_THRESHOLD = 0.6;
 
+export function highestRisk(items) {
+  const order = { high: 3, medium: 2, low: 1 };
+  return items.reduce((best, item) => (order[item.recurrenceRisk] > order[best] ? item.recurrenceRisk : best), "low");
+}
+
 export function emptyGapLedger() {
   return { version: 1, entries: {} };
 }
 
 /**
- * Fold-issued source label for one session. Evidence floors, `summary.sources`, and
- * `sourceProjects` all key off this string, so it must not collapse two sessions.
+ * Fold-issued source label for one native transcript. `summary.sources` and
+ * `sourceProjects` key off this string; observer identities carry evidence floors.
  * Time-prefixed Codex ULIDs share an 8-character prefix when they start in the same
  * minute; keep the native id whole.
  *
@@ -166,21 +175,169 @@ export function findGapEntry(ledger, memoryPath, proposedInstruction) {
   return best;
 }
 
+function sessionIdentityAliases(transcript, sessionIdentity, legacyIds) {
+  return [...new Set([transcript.identity, transcript.id])].filter(
+    (identity) => identity && identity !== sessionIdentity && (identity !== transcript.id || legacyIds.has(identity)),
+  );
+}
+
+function selectedNativeObservers(transcripts, legacyIds) {
+  const observers = new Map();
+  for (const transcript of transcripts) {
+    if (!(transcript?.corroborationIdentity || transcript?.identity || transcript?.id)) continue;
+    const observer = corroborationIdentityOf(transcript);
+    for (const native of new Set([
+      transcript.identity || transcript.id,
+      ...(legacyIds.has(transcript.id) ? [transcript.id] : []),
+    ])) {
+      if (!observers.has(native)) observers.set(native, new Set());
+      observers.get(native).add(observer);
+    }
+  }
+  return observers;
+}
+
+export function resolveGapObservationObserver(observation, observersByNative) {
+  if (!observation || hasUnattributedSightings(observation)) return null;
+  let observer = null;
+  for (const native of new Set([observation.sourceSessionId, ...(observation.sightingIds || [])])) {
+    const observers = observersByNative.get(native);
+    if (observers?.size !== 1) return null;
+    const [selected] = observers;
+    if (observer !== null && observer !== selected) return null;
+    observer = selected;
+  }
+  return observer;
+}
+
+function isOrdinaryNative(transcript, sessionIdentity) {
+  return (
+    !transcript.parentSessionId &&
+    !(transcript.harness === "pi" && transcript.interactionSignals?.source === "subagent") &&
+    (transcript.identity || transcript.id) === sessionIdentity
+  );
+}
+
+function sameContribution(left, right) {
+  if ((left.sourceSessionId || null) !== (right.sourceSessionId || null)) return false;
+  const leftNatives = [...new Set([left.sourceSessionId, ...(left.sightingIds || [])].filter(Boolean))].sort();
+  const rightNatives = [...new Set([right.sourceSessionId, ...(right.sightingIds || [])].filter(Boolean))].sort();
+  if (leftNatives.length && rightNatives.length && JSON.stringify(leftNatives) !== JSON.stringify(rightNatives))
+    return false;
+  if ((left.sourceKind || "native") !== (right.sourceKind || "native")) return false;
+  if ((left.sourceId || null) !== (right.sourceId || null)) return false;
+  if (left.contentDigest && right.contentDigest && left.contentDigest !== right.contentDigest) return false;
+  return left.sourceKind !== "external" || (left.revision === right.revision && left.evidenceKey === right.evidenceKey);
+}
+
+function contributionKey(observation) {
+  return sha256(
+    JSON.stringify([
+      observation.sourceSessionId,
+      observation.sightingIds,
+      observation.sourceKind,
+      observation.sourceId,
+      observation.revision,
+      observation.evidenceKey,
+      observation.contentDigest,
+    ]),
+  );
+}
+
+function destinationAcceptsObservation(observation, sessionIdentity, transcript, observersByNative, provenance) {
+  if (!observation) return true;
+  const prior =
+    !observation.sourceSessionId && isOrdinaryNative(transcript, sessionIdentity)
+      ? { ...observation, sourceSessionId: transcript.identity || transcript.id }
+      : observation;
+  if (!sameContribution(prior, provenance)) return false;
+  for (const native of new Set([observation.sourceSessionId, ...(observation.sightingIds || [])].filter(Boolean))) {
+    const observers = observersByNative.get(native);
+    if (observers && (observers.size !== 1 || !observers.has(sessionIdentity))) return false;
+  }
+  if (resolveGapObservationObserver(observation, observersByNative) === sessionIdentity) return true;
+  const nativeIdentity = transcript.identity || transcript.id;
+  return (
+    (observation.unattributedSightings &&
+      (observation.sourceSessionId === nativeIdentity || observation.sightingIds?.includes(nativeIdentity)) &&
+      observersByNative.get(nativeIdentity)?.size === 1) ||
+    (!observation.sourceSessionId &&
+      isOrdinaryNative(transcript, sessionIdentity) &&
+      (observation.sightingIds || []).every((native) => {
+        const observers = observersByNative.get(native);
+        return observers?.size === 1 && observers.has(sessionIdentity);
+      }))
+  );
+}
+
+function takePriorObservations(
+  entry,
+  sessionIdentity,
+  aliases,
+  transcript,
+  destinationIdentity = sessionIdentity,
+  acceptsPrior = (_observation) => true,
+) {
+  const nativeIdentity = transcript.identity || transcript.id;
+  const current = entry.sessions[destinationIdentity];
+  if (current && !current.sourceSessionId && isOrdinaryNative(transcript, sessionIdentity)) {
+    current.sourceSessionId = nativeIdentity;
+    current.sightingIds = [...new Set([...(current.sightingIds || []), nativeIdentity])];
+    delete current.unattributedSightings;
+  }
+  for (const alias of aliases) {
+    const observation = entry.sessions[alias];
+    if (!observation || observation.sourceSessionId) continue;
+    observation.sourceSessionId = nativeIdentity;
+    observation.sightingIds = [...new Set([...(observation.sightingIds || []), nativeIdentity])];
+    observation.source = gapSource(transcript);
+  }
+  const priors = [entry.sessions[destinationIdentity], ...aliases.map((identity) => entry.sessions[identity])].filter(
+    (observation) => observation && acceptsPrior(observation),
+  );
+  const firstObservedAt = priors
+    .map((observation) => observation.firstObservedAt || observation.observedAt)
+    .filter((value) => Number.isFinite(Date.parse(value)))
+    .sort((a, b) => Date.parse(a) - Date.parse(b))[0];
+  const coveredBySkill = priors.find((observation) => observation.coveredBySkill)?.coveredBySkill;
+  for (const alias of aliases) {
+    if (priors.includes(entry.sessions[alias])) delete entry.sessions[alias];
+  }
+  return { priors, firstObservedAt, coveredBySkill };
+}
+
+function hasUnattributedSightings(observation) {
+  return Boolean(observation.unattributedSightings || !observation.sourceSessionId);
+}
+
 /**
- * Fold this run's evidence into the ledger. One observation per (gap, session); a
- * session seen again replaces its own observation and keeps its first-seen timestamp.
+ * Record this run's sightings under the identity and provenance rules above, retaining
+ * the first-seen timestamp when replacing compatible history.
  *
- * @param {{ now?: Date, skills?: unknown[] }} [options]
+ * @param {{ now?: Date, skills?: unknown[], legacyIds?: Set<string>, transcripts?: object[] }} [options]
  */
 export function recordGapObservations(ledger, evidenceRecords, options = {}) {
-  const { now = new Date() } = options;
+  const { now = new Date(), legacyIds = new Set() } = options;
   const observedAt = new Date(now).toISOString();
+  const observersByNative = selectedNativeObservers(
+    options.transcripts || evidenceRecords.map((record) => record?.transcript),
+    legacyIds,
+  );
   let recorded = 0;
   for (const record of evidenceRecords) {
     if (!record || record.status !== "ok" || !record.memoryPath) continue;
     const transcript = record.transcript || {};
-    const sessionIdentity = transcript.identity || transcript.id;
-    if (!sessionIdentity) continue;
+    const sessionIdentity = corroborationIdentityOf(transcript);
+    if (!(transcript.corroborationIdentity || transcript.identity || transcript.id)) continue;
+    const provenance = {
+      sourceSessionId: transcript.identity || transcript.id,
+      sightingIds: [transcript.identity || transcript.id],
+      sourceKind: transcript.sourceKind || "native",
+      sourceId: transcript.sourceId || null,
+      revision: transcript.revision || null,
+      evidenceKey: record.key || null,
+      contentDigest: transcript.contentSignature || `${transcript.mtimeMs}:${transcript.bytes}`,
+    };
     for (const gap of record.gaps || []) {
       if (!gap || !gap.proposedInstruction) continue;
       // A citation from the analysis turn wins over word overlap: the model saw both
@@ -210,22 +367,65 @@ export function recordGapObservations(ledger, evidenceRecords, options = {}) {
           entry.proposedInstruction = gap.proposedInstruction;
         }
       }
-      const identityPrior = entry.sessions[sessionIdentity];
-      const aliasPrior = transcript.id && transcript.id !== sessionIdentity ? entry.sessions[transcript.id] : null;
-      const sameTrace = (observation) =>
-        (transcript.sourceKind !== "external" && observation.sourceKind !== "external") ||
-        (observation.sourceKind === (transcript.sourceKind || "native") &&
-          observation.sourceId === (transcript.sourceId || null) &&
-          observation.revision === (transcript.revision || null) &&
-          observation.evidenceKey === (record.key || null));
-      const priors = [identityPrior, aliasPrior].filter((observation) => observation && sameTrace(observation));
-      const firstObservedAt = priors
-        .map((observation) => observation.firstObservedAt || observation.observedAt)
-        .filter((value) => Number.isFinite(Date.parse(value)))
-        .sort((a, b) => Date.parse(a) - Date.parse(b))[0];
-      if (aliasPrior) delete entry.sessions[transcript.id];
-      const coveredBySkill =
-        gap.coveredBySkill || priors.find((observation) => observation.coveredBySkill)?.coveredBySkill;
+      let destinationIdentity = sessionIdentity;
+      let sourceQualified = false;
+      if (
+        !destinationAcceptsObservation(
+          entry.sessions[destinationIdentity],
+          sessionIdentity,
+          transcript,
+          observersByNative,
+          provenance,
+        )
+      ) {
+        destinationIdentity = transcript.identity || transcript.id;
+      }
+      if (
+        !destinationAcceptsObservation(
+          entry.sessions[destinationIdentity],
+          sessionIdentity,
+          transcript,
+          observersByNative,
+          provenance,
+        )
+      ) {
+        destinationIdentity = JSON.stringify([sessionIdentity, transcript.identity || transcript.id]);
+        sourceQualified = true;
+      }
+      if (
+        !destinationAcceptsObservation(
+          entry.sessions[destinationIdentity],
+          sessionIdentity,
+          transcript,
+          observersByNative,
+          provenance,
+        )
+      ) {
+        destinationIdentity = JSON.stringify([
+          sessionIdentity,
+          transcript.identity || transcript.id,
+          contributionKey(provenance),
+        ]);
+        sourceQualified = true;
+      }
+      const prior = takePriorObservations(
+        entry,
+        sessionIdentity,
+        (sourceQualified ? [] : sessionIdentityAliases(transcript, sessionIdentity, legacyIds)).filter(
+          (identity) =>
+            identity !== destinationIdentity &&
+            !entry.sessions[identity]?.sourceSessionId &&
+            (entry.sessions[identity]?.sightingIds || []).every((native) => {
+              const observers = observersByNative.get(native);
+              return observers?.size === 1 && observers.has(sessionIdentity);
+            }),
+        ),
+        transcript,
+        destinationIdentity,
+        (observation) => sameContribution(observation, provenance),
+      );
+      const { priors, firstObservedAt } = prior;
+      const coveredBySkill = gap.coveredBySkill || prior.coveredBySkill;
       const phrasings = [
         ...new Set([
           ...priors.flatMap(
@@ -234,10 +434,11 @@ export function recordGapObservations(ledger, evidenceRecords, options = {}) {
           gap.proposedInstruction,
         ]),
       ];
-      entry.sessions[sessionIdentity] = {
+      entry.sessions[destinationIdentity] = {
         firstObservedAt: firstObservedAt || observedAt,
         observedAt,
         sessionStartedAt:
+          transcript.corroborationStartedAt ??
           transcript.startedAt ??
           priors.find((observation) => observation.sessionStartedAt != null)?.sessionStartedAt ??
           null,
@@ -249,11 +450,26 @@ export function recordGapObservations(ledger, evidenceRecords, options = {}) {
         contentSignature: transcript.contentSignature || null,
         contentDigest: transcript.contentSignature || `${transcript.mtimeMs}:${transcript.bytes}`,
         source: gapSource(transcript),
+        sourceSessionId: transcript.identity || transcript.id,
+        observerId: sessionIdentity,
+        sightingIds: [
+          ...new Set(
+            [
+              ...priors.flatMap((observation) => observation.sightingIds || []),
+              transcript.identity || transcript.id,
+            ].filter(Boolean),
+          ),
+        ],
+        ...(priors.some(hasUnattributedSightings) ? { unattributedSightings: true } : {}),
         mistake: gap.mistake,
         quote: gap.quote,
-        recurrenceRisk: gap.recurrenceRisk,
+        recurrenceRisk: highestRisk([gap, ...priors]),
         phrasings,
-        domain: gap.domain === "orchestration" ? "orchestration" : "project",
+        domain:
+          gap.domain === "orchestration" &&
+          !priors.some((observation) => observation.observedAt === observedAt && observation.domain !== "orchestration")
+            ? "orchestration"
+            : "project",
         // A failed trigger: the analysis judged an existing skill's content to cover
         // this mistake. Absent when no skill covers it (including all pre-existing
         // observations), and absence never counts as a citation.
@@ -265,6 +481,120 @@ export function recordGapObservations(ledger, evidenceRecords, options = {}) {
     }
   }
   return recorded;
+}
+/**
+ * Re-key selected observations in old ledgers under the identity and provenance rules
+ * above; native analysis identities remain separate from corroborating observers.
+ */
+export function normalizeGapLedgerSessions(ledger, transcripts, { legacyIds = new Set() } = {}) {
+  const selections = [];
+  const observersByNative = selectedNativeObservers(transcripts, legacyIds);
+  for (const transcript of transcripts) {
+    if (!(transcript?.corroborationIdentity || transcript?.identity || transcript?.id)) continue;
+    const sessionIdentity = corroborationIdentityOf(transcript);
+    const aliases = sessionIdentityAliases(transcript, sessionIdentity, legacyIds);
+    const ordinaryNative = isOrdinaryNative(transcript, sessionIdentity);
+    selections.push({ transcript, sessionIdentity, aliases, ordinaryNative });
+  }
+
+  const resolvesTo = (observation, sessionIdentity) =>
+    resolveGapObservationObserver(observation, observersByNative) === sessionIdentity;
+  for (const entry of Object.values(ledger.entries)) {
+    for (const { transcript, sessionIdentity, aliases: nativeAliases, ordinaryNative } of selections) {
+      if (
+        legacyIds.has(transcript.id) &&
+        transcript.identity &&
+        transcript.identity !== transcript.id &&
+        observersByNative.get(transcript.id)?.size === 1 &&
+        observersByNative.get(transcript.id).has(sessionIdentity)
+      ) {
+        for (const observation of Object.values(entry.sessions)) {
+          if (observation.sourceSessionId === transcript.id) observation.sourceSessionId = transcript.identity;
+          if (observation.sightingIds?.includes(transcript.id)) {
+            observation.sightingIds = [
+              ...new Set(
+                observation.sightingIds.map((identity) =>
+                  identity === transcript.id ? transcript.identity : identity,
+                ),
+              ),
+            ];
+          }
+        }
+      }
+      const destination = entry.sessions[sessionIdentity];
+      if (
+        destination &&
+        !resolvesTo(destination, sessionIdentity) &&
+        !(
+          ordinaryNative &&
+          !destination.sourceSessionId &&
+          (destination.sightingIds || []).every((native) => {
+            const observers = observersByNative.get(native);
+            return observers?.size === 1 && observers.has(sessionIdentity);
+          })
+        )
+      )
+        continue;
+      const aliases = nativeAliases.filter((identity) => {
+        const prior = entry.sessions[identity];
+        return !prior?.sourceSessionId
+          ? (prior?.sightingIds || []).every((native) => {
+              const observers = observersByNative.get(native);
+              return observers?.size === 1 && observers.has(sessionIdentity);
+            })
+          : resolvesTo(prior, sessionIdentity);
+      });
+      for (const [identity, prior] of Object.entries(entry.sessions)) {
+        if (
+          identity !== sessionIdentity &&
+          prior.sourceSessionId === (transcript.identity || transcript.id) &&
+          resolvesTo(prior, sessionIdentity) &&
+          !aliases.includes(identity)
+        )
+          aliases.push(identity);
+      }
+      const observation = entry.sessions[sessionIdentity];
+      if (ordinaryNative && observation && !observation.sourceSessionId) {
+        observation.sourceSessionId = transcript.identity || transcript.id;
+        observation.sightingIds = [...new Set([...(observation.sightingIds || []), observation.sourceSessionId])];
+        delete observation.unattributedSightings;
+      }
+      if (!aliases.some((identity) => entry.sessions[identity])) continue;
+      const original =
+        entry.sessions[sessionIdentity] || aliases.map((identity) => entry.sessions[identity]).find(Boolean);
+      const { priors, firstObservedAt, coveredBySkill } = takePriorObservations(
+        entry,
+        sessionIdentity,
+        aliases,
+        transcript,
+        sessionIdentity,
+        (observation) => sameContribution(observation, original),
+      );
+      const current = priors[0];
+      const project = current.project || priors.find((observation) => observation.project)?.project;
+      const projectRoot = current.projectRoot || priors.find((observation) => observation.projectRoot)?.projectRoot;
+
+      entry.sessions[sessionIdentity] = {
+        ...current,
+        observerId: sessionIdentity,
+        ...(priors.length > 1 ? { recurrenceRisk: highestRisk(priors) } : {}),
+        ...(firstObservedAt ? { firstObservedAt } : {}),
+        sightingIds: [...new Set(priors.flatMap((observation) => observation.sightingIds || []))],
+        ...(priors.some(hasUnattributedSightings) ? { unattributedSightings: true } : {}),
+        phrasings: [
+          ...new Set([
+            ...priors.flatMap(
+              (observation) => observation.phrasings || [observation.proposedInstruction].filter(Boolean),
+            ),
+          ]),
+        ].filter(Boolean),
+        domain: priors.some((observation) => observation.domain !== "orchestration") ? "project" : "orchestration",
+        ...(coveredBySkill ? { coveredBySkill } : {}),
+        ...(project ? { project } : {}),
+        ...(projectRoot ? { projectRoot } : {}),
+      };
+    }
+  }
 }
 
 /**
@@ -280,14 +610,16 @@ export function filterGapLedger(ledger, evidenceRecords, selectedTranscripts = [
     options.sourceKind ||
     (selectedTranscripts.some((transcript) => transcript.sourceKind === "external") ? "external" : "native");
   const selected = new Map();
+  const observersByNative = selectedNativeObservers(selectedTranscripts, options.legacyIds || new Set());
   for (const transcript of selectedTranscripts) {
     selected.set(transcript.identity || transcript.id, transcript);
     if (transcript.sourceKind !== "external" && transcript.id) selected.set(transcript.id, transcript);
   }
   for (const [id, entry] of Object.entries(ledger.entries)) {
     for (const [sessionId, observation] of Object.entries(entry.sessions)) {
-      const record = current.get(sessionId);
-      const transcript = selected.get(sessionId);
+      const nativeIdentity = observation.sourceSessionId || sessionId;
+      const record = current.get(nativeIdentity);
+      const transcript = selected.get(nativeIdentity);
       const traceOnly = transcript?.sourceKind === "external";
       const valid =
         !transcript && sourceKind === "native" && observation.sourceKind !== "external"
@@ -305,6 +637,10 @@ export function filterGapLedger(ledger, evidenceRecords, selectedTranscripts = [
                 observation.contentDigest ===
                   (transcript.contentSignature || `${transcript.mtimeMs}:${transcript.bytes}`));
       if (!valid) delete entry.sessions[sessionId];
+      else {
+        const observer = resolveGapObservationObserver(observation, observersByNative);
+        if (observer) observation.observerId = observer;
+      }
     }
     if (!Object.keys(entry.sessions).length) {
       delete ledger.entries[id];
@@ -392,9 +728,12 @@ export function ledgerGapObservations(ledger, memoryPath, skills = null) {
       observations.push({
         proposedInstruction: entry.proposedInstruction,
         phrasings: obs.phrasings?.length ? obs.phrasings : [entry.proposedInstruction],
-        sessionId,
+        sessionId: obs.observerId || sessionId,
         gapIds: [entry.id, ...(entry.aliases || [])],
         source: obs.source,
+        ...(obs.sourceSessionId ? { sourceSessionId: obs.sourceSessionId } : {}),
+        sightingIds: obs.sightingIds || [],
+        unattributedSightings: hasUnattributedSightings(obs),
         mistake: obs.mistake,
         quote: obs.quote,
         recurrenceRisk: obs.recurrenceRisk,
@@ -451,17 +790,28 @@ export function mergeGapEntries(ledger, groups) {
     for (const entry of entries) {
       if (entry === target) continue;
       for (const [sessionId, obs] of Object.entries(entry.sessions)) {
-        const prior = target.sessions[sessionId];
+        const destination = target.sessions[sessionId];
+        const storageKey =
+          destination && !sameContribution(destination, obs)
+            ? JSON.stringify([sessionId, contributionKey(obs)])
+            : sessionId;
+        const prior = target.sessions[storageKey];
         if (!prior) {
-          target.sessions[sessionId] = obs;
+          target.sessions[storageKey] = {
+            ...obs,
+            phrasings: obs.phrasings || [entry.proposedInstruction],
+          };
         } else {
           const earlier =
             Date.parse(obs.firstObservedAt || obs.observedAt) < Date.parse(prior.firstObservedAt || prior.observedAt);
           if (earlier) prior.firstObservedAt = obs.firstObservedAt || obs.observedAt;
+          prior.recurrenceRisk = highestRisk([prior, obs]);
           if (prior.domain === "orchestration" && obs.domain !== "orchestration") prior.domain = "project";
           if (!prior.coveredBySkill && obs.coveredBySkill) prior.coveredBySkill = obs.coveredBySkill;
           if (!prior.project && obs.project) prior.project = obs.project;
           if (!prior.projectRoot && obs.projectRoot) prior.projectRoot = obs.projectRoot;
+          prior.sightingIds = [...new Set([...(prior.sightingIds || []), ...(obs.sightingIds || [])])];
+          if (hasUnattributedSightings(prior) || hasUnattributedSightings(obs)) prior.unattributedSightings = true;
           prior.phrasings = [
             ...new Set([
               ...(prior.phrasings || [target.proposedInstruction]),

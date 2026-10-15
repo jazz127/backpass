@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.34](https://github.com/kunchenguid/backpass/compare/backpass-v0.1.33...backpass-v0.1.34) (2026-10-13)
+
+
+### Bug Fixes
+
+* **discovery:** associate sessions in repos with separate git directories ([#206](https://github.com/kunchenguid/backpass/issues/206)) ([29c46e7](https://github.com/kunchenguid/backpass/commit/29c46e7209fbfd5a8739d343163b8250d67b14c6))
+
+## [0.1.33](https://github.com/kunchenguid/backpass/compare/backpass-v0.1.32...backpass-v0.1.33) (2026-10-12)
+
+
+### Features
+
+* **discovery:** add opt-in OMP session discovery to the Pi adapter ([#151](https://github.com/kunchenguid/backpass/issues/151)) ([9a4a773](https://github.com/kunchenguid/backpass/commit/9a4a773c0eaebfdb3ea4950a8a0f53d447ad8b60))
+
 ## [0.1.32](https://github.com/kunchenguid/backpass/compare/backpass-v0.1.31...backpass-v0.1.32) (2026-09-30)
 
 

@@ -139,6 +139,29 @@ test("CLAUDE.md as a pointer resolves AGENTS.md silently and only AGENTS.md is w
   assert.equal(fs.readFileSync(path.join(repo.root, "CLAUDE.md"), "utf8"), renderPointer("AGENTS.md"));
 });
 
+test("CLAUDE.md symlink to AGENTS.md resolves silently and only AGENTS.md is written", () => {
+  const repo = repoWith({ "AGENTS.md": AGENTS });
+  fs.symlinkSync("AGENTS.md", path.join(repo.root, "CLAUDE.md"));
+  const config = loadConfig(repo.root);
+
+  const { result, warnings } = captureWarnings(() => primaryMemoryFile(repo, config));
+  assert.equal(result.file.path, "AGENTS.md");
+  assert.deepEqual(warnings, []);
+  assert.deepEqual(
+    result.resolved.pointers.map((file) => file.path),
+    ["CLAUDE.md"],
+  );
+  assert.deepEqual(result.resolved.separate, []);
+
+  const written = applyOneEdit(repo, config);
+  assert.deepEqual(
+    written.written.map((w) => w.file),
+    ["AGENTS.md"],
+  );
+  assert.match(fs.readFileSync(path.join(repo.root, "AGENTS.md"), "utf8"), /full test suite/);
+  assert.equal(fs.readlinkSync(path.join(repo.root, "CLAUDE.md")), "AGENTS.md");
+});
+
 test("two separate full files: AGENTS.md is optimized, CLAUDE.md is left alone with a consolidate warning", () => {
   const repo = repoWith({ "AGENTS.md": AGENTS, "CLAUDE.md": SEPARATE_CLAUDE });
   const config = loadConfig(repo.root);

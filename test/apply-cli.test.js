@@ -6,7 +6,9 @@ import path from "node:path";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+import { applyDecisions } from "../src/apply/writer.js";
 import { buildProposal } from "../src/proposal.js";
+import { State } from "../src/state.js";
 import { stageAndMeasure } from "./helpers/staging.js";
 
 /**
@@ -73,10 +75,10 @@ const sectionBody = (text, heading) => new RegExp(`(?<=## ${heading}\\n\\n)[\\s\
  * the measured changes. No model is involved and nothing textual is invented - the
  * hunks are cut from the file, exactly as in production.
  */
-function proposeExtractions(dir) {
+function proposeExtractions(dir, { budgetTokens = 5000 } = {}) {
   const repo = { root: dir, realRoot: dir, name: path.basename(dir), worktrees: [dir], remotes: [] };
   const config = {
-    budgetTokens: 5000,
+    budgetTokens,
     maxEditsPerRun: 20,
     minGapEvidence: 2,
     skillsDir: ".agents/skills",
@@ -597,8 +599,8 @@ test("a memory write failure rolls back skills without truncating memory", () =>
 
 test("apply names a memory file left over budget without refusing the shrink", () => {
   const dir = initRepo();
-  const proposal = proposeExtractions(dir);
   // A cap this small cannot be met in one pass; the run is still legitimate progress.
+  const proposal = proposeExtractions(dir, { budgetTokens: 20 });
   fs.writeFileSync(path.join(dir, ".backpassrc.json"), JSON.stringify({ budgetTokens: 20 }));
 
   const applied = runApply(
@@ -610,6 +612,76 @@ test("apply names a memory file left over budget without refusing the shrink", (
   assert.match(applied.output, /wrote AGENTS\.md/);
   assert.match(applied.output, /is still \d+ tokens over the 20-token budget/);
   assert.match(applied.output, /run `backpass` again for the next shrink step/);
+});
+
+test("apply refuses a proposal made under a different budget, naming both numbers and the remedy", () => {
+  for (const [made, configured] of [
+    [30000, 10000],
+    [20, 5000],
+  ]) {
+    const dir = initRepo();
+    const proposal = proposeExtractions(dir, { budgetTokens: made });
+    fs.writeFileSync(path.join(dir, ".backpassrc.json"), JSON.stringify({ budgetTokens: configured }));
+    git(["add", "-A"], dir);
+    git(["commit", "-qm", "config"], dir);
+    const before = fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8");
+
+    const applied = runDecided(dir, proposal.edits.map((e) => `${e.id}=accepted`).join(" "));
+
+    assert.equal(applied.status, 1, `a budget mismatch must refuse the apply:\n${applied.output}`);
+    assert.match(
+      applied.output,
+      new RegExp(
+        `this proposal was made under a ${made.toLocaleString("en-US")}-token budget for AGENTS\\.md; ` +
+          `the current config says ${configured.toLocaleString("en-US")}`,
+      ),
+    );
+    assert.match(applied.output, new RegExp(`re-run apply with --budget ${made},`));
+    assert.equal(fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8"), before);
+    assert.equal(porcelain(dir), "", "nothing was written");
+    assert.deepEqual(rejectionsOf(dir), {});
+  }
+});
+
+test("the writer itself refuses accepted root edits made under a different budget", () => {
+  // `cmdApply` refuses first; the writer, as owner of every write gate, must hold on its own.
+  const dir = initRepo();
+  const proposal = proposeExtractions(dir, { budgetTokens: 30000 });
+  const [accepted, rejected] = proposal.edits;
+  const before = fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8");
+
+  const results = applyDecisions({
+    proposal,
+    decisions: { [accepted.id]: "accepted", [rejected.id]: "rejected" },
+    repo: { root: dir, realRoot: dir, name: path.basename(dir), worktrees: [dir], remotes: [] },
+    state: new State(dir).ensure(),
+    config: { budgetTokens: 10000, skillsDir: ".agents/skills" },
+  });
+
+  assert.deepEqual(results.written, []);
+  assert.equal(results.rejectionsRecorded, false);
+  assert.deepEqual(
+    results.failed.map((failure) => failure.error),
+    [
+      "this proposal was made under a 30,000-token budget for AGENTS.md; the current config says 10,000; " +
+        "re-run apply with --budget 30000, or run `backpass` again to propose under the current budget",
+    ],
+  );
+  assert.equal(fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8"), before);
+  assert.equal(fs.existsSync(path.join(dir, ".agents")), false, "no skill was written");
+  assert.deepEqual(rejectionsOf(dir), {});
+});
+
+test("apply under the budget the proposal was made under gates at that budget", () => {
+  const dir = initRepo();
+  const proposal = proposeExtractions(dir, { budgetTokens: 30000 });
+  fs.writeFileSync(path.join(dir, ".backpassrc.json"), JSON.stringify({ budgetTokens: 10000 }));
+
+  const applied = runDecided(dir, proposal.edits.map((e) => `${e.id}=accepted`).join(" "), ["--budget", "30000"]);
+
+  assert.equal(applied.status, 0, `the named remedy must apply:\n${applied.output}`);
+  assert.match(applied.output, /wrote AGENTS\.md/);
+  assert.match(applied.output, /\/ 30,000 tok/);
 });
 
 test("a skillsDir mismatch failure prints its message without a placeholder location", () => {

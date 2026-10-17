@@ -1,6 +1,6 @@
 import { formatCorpusMix } from "../interaction.js";
 import { UserError, color, info, json, out, warn } from "../logger.js";
-import { applyDecisions } from "../apply/writer.js";
+import { applyDecisions, budgetMismatchHint, budgetMismatchMessage, budgetMismatches } from "../apply/writer.js";
 import { closeApplySurface, openApplySurface, pollDecisions, renderApplySurface } from "../apply/lavish.js";
 import { reviewInTerminal } from "../apply/terminal.js";
 import { openInBrowser } from "../apply/browser.js";
@@ -116,6 +116,13 @@ export async function cmdApply(ctx) {
   if (!proposal.edits.length) {
     out("The last run proposed no edits. Nothing to apply.");
     return 0;
+  }
+
+  // Like scope, the budget is part of what the proposal was made under: refuse before
+  // the review rather than after it, so nobody decides edits that cannot be applied.
+  const mismatches = budgetMismatches(proposal, config);
+  if (mismatches.length) {
+    throw new UserError(mismatches.map(budgetMismatchMessage).join("\n"), budgetMismatchHint(mismatches));
   }
 
   const editIds = proposal.edits.map((e) => e.id);

@@ -19,7 +19,9 @@ import {
   parseSkillFile,
   prepareWorkspace,
   repoFingerprint,
+  recoveredLineCounts,
   skillStagingRefusal,
+  splitRemovalHunk,
   workspacePathFor,
 } from "../src/workspace.js";
 import { UserError } from "../src/logger.js";
@@ -871,4 +873,103 @@ test("project scope bills a skill symlinked out of the repo but never stages it"
   const external = prepareWorkspace({ state, repo, memoryFile, skillsDir: ".agents/skills", allowExternal: true });
   assert.equal(external.originals.get(".agents/skills/db/SKILL.md"), SKILL);
   assert.ok(external.originals.has(".agents/skills/solo.md"));
+});
+
+test("a setext heading stays with the section it introduces when a removal is split", () => {
+  const oldText = [
+    "# Guide",
+    "",
+    "Keep it small.",
+    "",
+    "Release steps",
+    "---",
+    "",
+    "Tag the commit.",
+    "",
+    "## Other",
+    "",
+    "Stay.",
+    "",
+  ].join("\n");
+  const oldLines = oldText.split("\n");
+  const skill = "---\nname: release\ndescription: Release steps.\n---\n\n# Release\n\nTag the commit.\n";
+  const hunk = { oldStart: 5, oldEnd: 9 };
+  assert.equal(splitRemovalHunk(hunk, { oldText, oldLines, recovered: recoveredLineCounts([skill]) }), null);
+});
+
+test("a plain thematic break never ties an extraction to the deletion after it", () => {
+  const skill =
+    "---\nname: release\ndescription: Release steps.\n---\n\n## Release\n\nTag the commit before release.\n";
+  const split = (lines, hunk) => {
+    const oldText = lines.join("\n");
+    return splitRemovalHunk(hunk, { oldText, oldLines: oldText.split("\n"), recovered: recoveredLineCounts([skill]) });
+  };
+  const afterParagraph = split(
+    [
+      "# Guide",
+      "",
+      "Keep it small.",
+      "",
+      "Tag the commit before release.",
+      "",
+      "---",
+      "",
+      "Drop this stale note.",
+      "",
+      "## Other",
+      "",
+      "Stay.",
+      "",
+    ],
+    { oldStart: 5, oldEnd: 10 },
+  );
+  assert.deepEqual(
+    afterParagraph?.map((sub) => sub.find),
+    ["Tag the commit before release.\n\n---\n", "\nDrop this stale note.\n\n"],
+  );
+  const afterHeading = split(
+    [
+      "# Guide",
+      "",
+      "Keep it small.",
+      "",
+      "## Release",
+      "---",
+      "",
+      "Tag the commit before release.",
+      "",
+      "Drop this stale note.",
+      "",
+      "## Other",
+      "",
+      "Stay.",
+      "",
+    ],
+    { oldStart: 5, oldEnd: 11 },
+  );
+  assert.equal(afterHeading?.length, 2);
+});
+
+test("a thematic break between a heading and its section never lets an extraction orphan the heading", () => {
+  const oldText = [
+    "# Guide",
+    "",
+    "Keep it small.",
+    "",
+    "## Notes",
+    "---",
+    "",
+    "Tag the commit before release.",
+    "",
+    "## Other",
+    "",
+    "Stay.",
+    "",
+  ].join("\n");
+  const skill = "---\nname: release\ndescription: Release steps.\n---\n\n# Release\n\nTag the commit before release.\n";
+  const hunk = { oldStart: 5, oldEnd: 9 };
+  assert.equal(
+    splitRemovalHunk(hunk, { oldText, oldLines: oldText.split("\n"), recovered: recoveredLineCounts([skill]) }),
+    null,
+  );
 });

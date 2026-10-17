@@ -4,7 +4,7 @@ import path from "node:path";
 import { canonicalizeSearchPathRoots } from "./config.js";
 import { anchoredHunks, countOccurrences, span } from "./diff.js";
 import { warn } from "./logger.js";
-import { parseMemoryUnits, readOnlyResolvedPath, resolveMemoryPath } from "./memory.js";
+import { THEMATIC_BREAK, parseMemoryUnits, readOnlyResolvedPath, resolveMemoryPath } from "./memory.js";
 import { isDirectoryEntry, parseFrontmatter, skillBody } from "./skills.js";
 import { sha256 } from "./state.js";
 
@@ -401,7 +401,9 @@ export function splitRemovalHunk(hunk, { oldText, oldLines, recovered }) {
     if (remaining > 0) recovered.set(normalized, remaining - 1);
   }
 
+  const unitLines = new Set();
   for (const unit of parseMemoryUnits(oldText)) {
+    for (let lineNo = unit.startLine; lineNo <= unit.endLine; lineNo += 1) unitLines.add(lineNo);
     const start = Math.max(unit.startLine, hunk.oldStart);
     const end = Math.min(unit.endLine, hunk.oldEnd);
     if (start > end) continue;
@@ -412,12 +414,35 @@ export function splitRemovalHunk(hunk, { oldText, oldLines, recovered }) {
     if (kinds.size > 1) return null;
   }
 
+  const isAtxHeading = (lineNo) => /^#{1,6}\s+/.test(oldLines[lineNo - 1] || "");
+  const isSetextTitle = (lineNo) =>
+    lineNo >= 1 &&
+    Boolean(normalizeRecoveryLine(oldLines[lineNo - 1])) &&
+    !unitLines.has(lineNo) &&
+    !isAtxHeading(lineNo) &&
+    !THEMATIC_BREAK.test(oldLines[lineNo - 1]);
+
+  // A heading (ATX, or a setext title with its dash underline) stays with the content it
+  // introduces; a plain thematic break introduces nothing.
   for (let lineNo = hunk.oldStart; lineNo <= hunk.oldEnd; lineNo += 1) {
-    if (!/^#{1,6}\s+/.test(oldLines[lineNo - 1] || "")) continue;
+    let headingStart = lineNo;
+    if (!isAtxHeading(lineNo)) {
+      if (unitLines.has(lineNo) || !/^ {0,3}-{3,}[ \t]*$/.test(oldLines[lineNo - 1]) || !isSetextTitle(lineNo - 1)) {
+        continue;
+      }
+      while (isSetextTitle(headingStart - 1)) headingStart -= 1;
+    }
     let contentLine = lineNo + 1;
-    while (contentLine <= hunk.oldEnd && !normalizeRecoveryLine(oldLines[contentLine - 1])) contentLine += 1;
-    if (contentLine > hunk.oldEnd || /^#{1,6}\s+/.test(oldLines[contentLine - 1] || "")) continue;
-    if (lineKinds.get(lineNo) !== lineKinds.get(contentLine)) return null;
+    while (
+      contentLine <= hunk.oldEnd &&
+      (!lineKinds.has(contentLine) || THEMATIC_BREAK.test(oldLines[contentLine - 1]))
+    ) {
+      contentLine += 1;
+    }
+    if (contentLine > hunk.oldEnd || !unitLines.has(contentLine)) continue;
+    for (let headingLine = headingStart; headingLine <= lineNo; headingLine += 1) {
+      if (lineKinds.has(headingLine) && lineKinds.get(headingLine) !== lineKinds.get(contentLine)) return null;
+    }
   }
 
   // Group the removed lines into maximal runs by recovery; blank lines never start a

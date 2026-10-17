@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.1.36](https://github.com/kunchenguid/backpass/compare/backpass-v0.1.35...backpass-v0.1.36) (2026-10-16)
+
+
+### Bug Fixes
+
+* **memory:** recognize CLAUDE.md symlinks as pointers ([#217](https://github.com/kunchenguid/backpass/issues/217)) ([8f1eda3](https://github.com/kunchenguid/backpass/commit/8f1eda38d27eab2466b920a5100e84c8b639a719))
+
+## [0.1.35](https://github.com/kunchenguid/backpass/compare/backpass-v0.1.34...backpass-v0.1.35) (2026-10-16)
+
+
+### Features
+
+* **status:** show each nested memory file's sampled-session reach ([#209](https://github.com/kunchenguid/backpass/issues/209)) ([8bb390b](https://github.com/kunchenguid/backpass/commit/8bb390b044d791c9acd890ca8a231d540e9f73d7)), closes [#191](https://github.com/kunchenguid/backpass/issues/191)
+
+
+### Bug Fixes
+
+* **apply:** refuse a proposal made under a different budget ([#210](https://github.com/kunchenguid/backpass/issues/210)) ([f24dbab](https://github.com/kunchenguid/backpass/commit/f24dbab3539f7a8fa5b2c410c32978b9396cfe2f))
+* **memory:** stop treating thematic breaks as instruction units ([#213](https://github.com/kunchenguid/backpass/issues/213)) ([d605c97](https://github.com/kunchenguid/backpass/commit/d605c97ce3e8f08b9e2915a7421956216fd1d768))
+
 ## [0.1.34](https://github.com/kunchenguid/backpass/compare/backpass-v0.1.33...backpass-v0.1.34) (2026-10-13)
 
 

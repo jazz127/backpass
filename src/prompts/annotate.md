@@ -37,15 +37,16 @@ Hard rules - a violation fails the whole proposal:
 2. **At most {{MAX_EDITS}} edits** - the learning rate. Regroup or revert if you are over.
 3. **Every edit carries at least one verbatim quote in `evidence`**, with its source.
 4. **Every `add`, `rewrite` and `remove` - of {{MEMORY_PATH}} or of a skill file - carries
-   quotes from at least {{MIN_GAP_EVIDENCE}} distinct sessions.** Backpass counts distinct
-   `source` values in your `evidence` only when they match source labels issued by this
-   run's fold; do not report a count of your own, it is not read. This covers
-   rewrites of every shape, a tightening included - one session is not enough to change
-   text that loads on every future run. `extract` and `move` are exempt, because they keep
-   every line. If you have only one session for a change, revert it in the file, or cite a
-   second session's quote from the evidence rows you were shown.
+   quotes from at least {{MIN_GAP_EVIDENCE}} distinct corroborating observers.** Only
+   `source` labels issued by this run's fold count. Backpass counts the distinct observers
+   behind those labels: related transcripts share one observer even when their labels
+   differ. Do not report a count of your own, it is not read. This covers rewrites of
+   every shape, a tightening included - one observer is not enough to change text that
+   loads on every future run. `extract` and `move` are exempt, because they keep every
+   line. If you have only one observer for a change, revert it in the file, or cite a
+   quote backed by another observer from the evidence rows you were shown.
 5. **Removing an instruction outright needs harm evidence from at least
-   {{MIN_GAP_EVIDENCE}} distinct sessions** (`harm-sessions` in the evidence). Only
+   {{MIN_GAP_EVIDENCE}} distinct corroborating observers** (`harm-sessions` in the evidence). Only
    `harm` negatives argue against an instruction; `non-compliance` never justifies a
    deletion. A change that only deletes text and is not part of an extract or a move is a
    removal whatever its `kind` says - if it lacks the evidence, revert it in the file first.

@@ -347,6 +347,73 @@ test("synthesis edits the staging copy natively; measured hunks anchor to the ra
   assert.equal(fs.readFileSync(path.join(repo.root, "AGENTS.md"), "utf8"), AGENTS.replace(TWO_ITEMS, ""));
 });
 
+// README's corroboration and harm floors count observers, not distinct quote labels.
+// Exercise the emitted agent interface and the proposal gate through synthesis with a
+// scripted harness. This checks the prompt contract, not a model's interpretation.
+for (const kind of ["rewrite", "remove"]) {
+  for (const independent of [false, true]) {
+    test(`synthesis observer contract: ${kind} with ${independent ? "independent" : "related"} sources`, async () => {
+      const summary = foldEvidence(
+        ["child-a", "child-b"].map((nativeId, index) => ({
+          status: "ok",
+          transcript: {
+            id: nativeId,
+            identity: `pi-file-${nativeId}`,
+            nativeId,
+            harness: "pi",
+            startedAt: Date.parse("2026-08-02T00:00:00Z"),
+            corroborationIdentity: independent && index ? "root-b" : "root-a",
+            corroborationNativeId: independent && index ? "root-b" : "root-a",
+            corroborationStartedAt: Date.parse("2026-08-01T00:00:00Z"),
+            interaction: "non-interactive",
+          },
+          negative: [{ instruction: "AG-005", quote: `brevity caused lost context in ${nativeId}`, class: "harm" }],
+        })),
+      );
+      assert.equal(summary.sources.length, 2, "two fold-issued labels in both scenarios");
+      assert.equal(summary.instructions[0].harmSessions, independent ? 2 : 1);
+      const evidence = summary.instructions[0].quotes.map(({ text, source }) => ({
+        polarity: "negative",
+        text,
+        source,
+      }));
+      const { run, calls } = setup(
+        {
+          edit: {
+            "AGENTS.md": {
+              replace: [["- Keep this file short.\n", kind === "remove" ? "" : "- Keep essential context.\n"]],
+            },
+          },
+          annotations: [{ reply: { edits: [{ changes: ["H1"], kind, evidence }] } }],
+        },
+        { summary },
+      );
+      if (independent) {
+        const { proposal, violations } = await run();
+        assert.deepEqual(violations, []);
+        assert.equal(proposal.edits.length, 1);
+        assert.equal(proposal.edits[0].transcripts, 2);
+      } else {
+        await assert.rejects(run(), (err) => {
+          assert.ok(err instanceof ProposalViolation);
+          assert.ok(err.violations.some((violation) => /backed by 1 session\(s\); 2 are required/.test(violation)));
+          return true;
+        });
+      }
+      const prompts = calls()
+        .filter(({ argv }) => argv.includes("--file"))
+        .map(({ argv }) => fs.readFileSync(argv[argv.indexOf("--file") + 1], "utf8").replace(/\s+/g, " "));
+      assert.ok(prompts.length >= 2, "editing and annotation both reach the harness");
+      for (const prompt of prompts) {
+        assert.match(prompt, /2 distinct corroborating observers/);
+        assert.match(prompt, /related transcripts share one observer/);
+        assert.doesNotMatch(prompt, /counts distinct `source` values/);
+        assert.match(prompt, /harm evidence from at least 2 distinct corroborating observers/);
+      }
+    });
+  }
+}
+
 test("a violated annotation is re-prompted with the exact breach, and the corrected answer passes", async () => {
   const { repo, run } = setup({
     edit: {

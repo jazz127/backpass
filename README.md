@@ -469,9 +469,10 @@ Per-transcript failures, such as timeouts or unparseable output, still let the r
 
 ### 4. Aggregate gradients - and one judged consolidation call
 
-Evidence is grouped by instruction, giving each one a positive/negative count, a count of
-distinct observers with harm-class negatives, and a **relevance** figure: the share of
-analyzed sessions in which it mattered at all. Relevance is reported both overall and
+Evidence is grouped by instruction, giving each one positive/negative counts, transcript
+reach (`sessions`), distinct corroborating `observers`, a count of observers with harm-class
+negatives, and a **relevance** figure: the share of analyzed transcripts in which it mattered
+at all. Relevance is reported both overall and
 separately for interactive and non-interactive sessions. The fold also reports memory-file
 units that substantially overlap a project skill. An overlap with a skill description duplicates
 always-loaded tokens and points the shrink at the memory-file copy; an overlap with a
@@ -716,8 +717,9 @@ backpass apply --decisions "e1=accepted e2=rejected:disagree"   # decided elsewh
 `memoryFiles` is an ordered list (default `["AGENTS.md", "CLAUDE.md"]`); the first one
 that exists is the root file a run optimizes, so **AGENTS.md is canonical**. Named
 [nested files](#10-nested-memory-files-in-a-monorepo) are additional weights, not
-separate root files. A `CLAUDE.md` that imports `AGENTS.md` with `@AGENTS.md`, or is a
-symlink resolving to the same file, is treated as a pointer:
+separate root files. A `CLAUDE.md` containing only the `@AGENTS.md` import (apart from
+blank lines and HTML comments), or a symlink resolving to the same file, is treated as
+a pointer:
 
 - Optimizing AGENTS.md covers both harness families and the pointer stays valid. Nothing
   to report.
@@ -769,8 +771,8 @@ weight of its own; a missing file is reported, never created:
   addition in the wrong file. A rewrite or removal stays with the file whose text it
   changes, and a failed skill trigger stays with the root, which owns the skill layer.
 - **A budget per file.** Each nested file is held to `nestedBudgetTokens` (`budgetTokens`
-  when unset), at propose and again at apply; apply refuses a nested file whose
-  configured budget changed since the proposal was made. An unchanged root over budget
+  when unset), at propose and again at apply (see [Apply](#8-apply---the-human-gate)
+  for budget changes). An unchanged root over budget
   does not block a combined proposal if at least one nested file actually runs synthesis with analyzed
   evidence; if every nested file is skipped, the normal root shrink gate still applies.
   Root edits must still clear that gate, and a nested edit must clear its own file's gate.

@@ -136,7 +136,8 @@ export function parseMemoryUnits(text) {
       flush(i);
       continue;
     }
-    // A new list item starts a new unit; continuation lines stay with it.
+    // Flush preceding prose too, so a later setext underline cannot swallow the list
+    // as heading text. Continuation lines stay with their list item.
     if (isListItem && buffer.length) {
       flush(i);
     }

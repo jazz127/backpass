@@ -88,6 +88,7 @@ export function foldEvidence(
         positive: 0,
         negative: 0,
         sessions: new Set(),
+        observers: new Set(),
         sessionsByInteraction: { [INTERACTIVE]: new Set(), [NON_INTERACTIVE]: new Set() },
         sessionsByProject: new Map(),
         harmSessions: new Set(),
@@ -146,6 +147,7 @@ export function foldEvidence(
         entry[polarity] += 1;
         const category = classifyInteraction(record.transcript);
         entry.sessions.add(sessionIdentity);
+        entry.observers.add(corroborationIdentity);
         entry.sessionsByInteraction[category].add(sessionIdentity);
         const projectKey = record.transcript.project;
         if (projectKey) {
@@ -236,6 +238,7 @@ export function foldEvidence(
         negative: entry.negative,
         harmSessions: entry.harmSessions.size,
         sessions: entry.sessions.size,
+        observers: entry.observers.size,
         relevance: analyzedSessions ? entry.sessions.size / analyzedSessions : 0,
         relevanceByInteraction: {
           [INTERACTIVE]: analyzedByInteraction[INTERACTIVE]
@@ -721,7 +724,7 @@ function renderEvidence(summary, { includeReportOnly }) {
     const cost = row.tokens === null ? "" : ` cost=${row.tokens}tok`;
     const harm = row.negative > 0 ? ` harm-sessions=${row.harmSessions ?? 0}` : "";
     lines.push(
-      `- [${row.instruction}] +${row.positive} -${row.negative}${harm} sessions=${row.sessions} relevance=${relevance}${byCategory}${cost}` +
+      `- [${row.instruction}] +${row.positive} -${row.negative}${harm} sessions=${row.sessions} observers=${row.observers} relevance=${relevance}${byCategory}${cost}` +
         (row.known ? "" : " (id not found in current file - stale reference)"),
     );
     if (row.skillOverlap) renderSkillOverlap(lines, row.skillOverlap);

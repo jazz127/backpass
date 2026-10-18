@@ -56,9 +56,12 @@ To tune an existing skill's trigger, edit its `description:` line under `./{{SKI
 
 ## Folded evidence
 
-`sessions` is how many distinct sessions produced the item. `relevance` is the share of
-analyzed sessions in which an instruction drew any evidence at all, also split by
-interactive vs non-interactive so a robot-heavy corpus cannot hide a category-specific
+Per-instruction `sessions` counts distinct transcripts with evidence; `observers`
+counts distinct corroborating observers behind that evidence; related transcripts share
+one observer even when their quote source labels differ. In gap rows, `sessions` counts
+observers. `harm-sessions` counts observers with harm-class negatives. `relevance` is the
+share of analyzed transcripts in which an instruction drew any evidence at all, also split
+by interactive vs non-interactive so a robot-heavy corpus cannot hide a category-specific
 signal.
 
 {{EVIDENCE}}
@@ -73,13 +76,13 @@ signal.
    human can decide on; pick the highest-signal ones. A small correct step beats a large
    speculative one.
 2. **Every change to this always-loaded file needs evidence from at least
-   {{MIN_GAP_EVIDENCE}} distinct sessions** - adding text, rewriting text and removing
+   {{MIN_GAP_EVIDENCE}} distinct corroborating observers** - adding text, rewriting text and removing
    text alike, whatever the shape of the change. One bad session never rewrites the
    weights. Extracting text into a skill and moving text within the file are exempt:
-   they keep every line. If only one session supports a wording change, leave the
+   they keep every line. If only one observer supports a wording change, leave the
    wording alone.
 3. **Removing an instruction outright needs harm evidence from at least
-   {{MIN_GAP_EVIDENCE}} distinct sessions** (`harm-sessions` in the evidence rows).
+   {{MIN_GAP_EVIDENCE}} distinct corroborating observers** (`harm-sessions` in the evidence rows).
    Only `harm` negatives - following the instruction caused damage - argue against an
    instruction. `non-compliance` means it failed to steer: reinforce it, reposition it,
    or improve its trigger, never delete it for being ignored. Text you delete that does

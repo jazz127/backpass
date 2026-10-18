@@ -7,6 +7,7 @@ import { memoryTextHash, readOnlyResolvedPath, resolveMemoryPath } from "../memo
 import { userClaudeSkillsDir } from "../config.js";
 import { budgetGateKind, budgetStatus, estimateTokens, formatTokens } from "../tokens.js";
 import { recordRejection } from "../state.js";
+import { nestedBudget } from "../nested.js";
 import {
   CANONICAL_SKILLS_DIR,
   CLAUDE_SKILLS_LINK,
@@ -168,6 +169,58 @@ function overBudgetWarning(label, budget) {
   );
 }
 
+/**
+ * Budgets the proposal was made under that the current config no longer names.
+ *
+ * Synthesis measured and gated every file against the cap in force then, recorded as
+ * `budget.capTokens` (root) and `nested[].budget.capTokens`; gating the accepted subset
+ * against a different number would compare two measurements and either refuse sound
+ * additions or skip the zero-sum the proposal was held to. So apply refuses, naming both
+ * numbers, rather than pick one. Only files `edits` land in are checked, and a proposal
+ * that recorded no cap is left to the current config.
+ *
+ * @returns {{ file: string, proposed: number, current: number, remedy: string }[]}
+ */
+export function budgetMismatches(proposal, config, edits = proposal.edits) {
+  const mismatches = [];
+  const rootCap = proposal.budget?.capTokens;
+  if (edits.some((edit) => !edit.nestedMemoryFile) && Number.isFinite(rootCap) && rootCap !== config.budgetTokens) {
+    mismatches.push({
+      file: proposal.memoryFile.path,
+      proposed: rootCap,
+      current: config.budgetTokens,
+      remedy: `--budget ${rootCap}`,
+    });
+  }
+  const nestedCap = nestedBudget(config);
+  for (const nested of proposal.nested || []) {
+    const cap = nested.budget?.capTokens;
+    if (!edits.some((edit) => edit.nestedMemoryFile === nested.memoryFile.path)) continue;
+    if (!Number.isFinite(cap) || cap === nestedCap) continue;
+    mismatches.push({
+      file: nested.memoryFile.path,
+      proposed: cap,
+      current: nestedCap,
+      remedy: config.nestedBudgetTokens == null ? `--budget ${cap}` : `nestedBudgetTokens set to ${cap}`,
+    });
+  }
+  return mismatches;
+}
+
+/** One mismatch, named with both numbers. */
+export function budgetMismatchMessage({ file, proposed, current }) {
+  return (
+    `this proposal was made under a ${formatTokens(proposed)}-token budget for ${file}; ` +
+    `the current config says ${formatTokens(current)}`
+  );
+}
+
+/** How to apply under the proposal's own budgets, or propose under the current ones. */
+export function budgetMismatchHint(mismatches) {
+  const remedies = [...new Set(mismatches.map((m) => m.remedy))];
+  return `re-run apply with ${remedies.join(" and ")}, or run \`backpass\` again to propose under the current budget`;
+}
+
 function atomicReplace(target, text) {
   const temp = path.join(path.dirname(target), `.${path.basename(target)}.backpass-${randomUUID()}`);
   const mode = fs.statSync(target).mode & 0o7777;
@@ -237,7 +290,8 @@ function removeEmptyDirectories(directories) {
  *
  * Everything upstream is read-only analysis; a run only changes the weights here, after
  * explicit per-edit decisions arrive through `cmdApply` (see `../commands/apply.js`).
- * Before the first byte is written, the memory file and
+ * Before the first byte is written, every file an accepted edit lands in must still have
+ * the budget the proposal was made under (`budgetMismatches`), the memory file and
  * every decided non-memory target must still be the files the proposal measured; the
  * accepted subset must clear the same cap/shrink budget gate as the full proposal
  * (`budgetGateKind`); every accepted edit for a file must compose against that file's
@@ -261,6 +315,17 @@ export function applyDecisions({ proposal, decisions, repo, state, config, dryRu
     rejected: rejected.length,
     rejectionsRecorded: false,
   };
+
+  // Before anything is read: an accepted subset gated against a cap the proposal was
+  // not made under compares two different measurements (`budgetMismatches`).
+  const mismatches = budgetMismatches(proposal, config, accepted);
+  if (mismatches.length) {
+    const hint = budgetMismatchHint(mismatches);
+    for (const mismatch of mismatches) {
+      results.failed.push({ file: mismatch.file, error: `${budgetMismatchMessage(mismatch)}; ${hint}` });
+    }
+    return results;
+  }
 
   if ((proposal.scope || "project") === "project") {
     const targets = new Set([
@@ -497,7 +562,7 @@ export function applyDecisions({ proposal, decisions, repo, state, config, dryRu
       });
       continue;
     }
-    const capTokens = config.nestedBudgetTokens ?? config.budgetTokens;
+    const capTokens = nestedBudget(config);
     const budget = budgetStatus(plan.before, plan.text, capTokens);
     const gate = budgetGateKind(budget);
     if (gate === "cap") {

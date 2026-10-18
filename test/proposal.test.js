@@ -3042,6 +3042,30 @@ test("non-compliance never satisfies the removal-evidence floor; harm does", () 
   assert.equal(harmed.proposal.edits.length, 1);
 });
 
+test("deleting a list after prose and before a dash break still requires harm evidence", () => {
+  for (const harmSessions of [0, 2]) {
+    const result = gate({
+      text: "Rules:\n- Run tests.\n---\n",
+      edit: memoryEdit((text) => text.replace("- Run tests.\n", "")),
+      annotation: { edits: [claim(["H1"], { kind: "remove" })] },
+      context: {
+        summary: {
+          instructions: [{ instruction: "AG-002", harmSessions }],
+        },
+      },
+    });
+    if (harmSessions === 0) {
+      assert.equal(result.proposal.edits.length, 0);
+      assert.ok(
+        result.violations.some((violation) => /deletes \[AG-002\].*0 session\(s\) of harm-class/.test(violation)),
+      );
+    } else {
+      assert.deepEqual(result.violations, []);
+      assert.equal(result.proposal.edits.length, 1);
+    }
+  }
+});
+
 test("sentence-level harm clears removal of its oversized parent paragraph", () => {
   const blob = Array.from(
     { length: 5 },
@@ -3374,6 +3398,8 @@ test("apply measures a legacy skill rewrite missing descriptionDelta", () => {
   });
   assert.deepEqual(built.violations, []);
   delete built.proposal.edits[0].descriptionDelta;
+  // Legacy in its cap too: a proposal that recorded none is gated at the current config.
+  delete built.proposal.budget.capTokens;
 
   const results = applyDecisions({
     proposal: built.proposal,
@@ -3389,15 +3415,20 @@ test("apply measures a legacy skill rewrite missing descriptionDelta", () => {
 test("post-apply warnings label a newly created skill description as always-loaded", () => {
   const skillText =
     "---\nname: release-signing\ndescription: Release.\n---\n\n- Use Node 18 via nvm before running any script.\n";
-  const built = gate({
-    edit: (root) => {
-      writeIn(root, "AGENTS.md", (text) =>
-        text.replace("- Use Node 18 via nvm before running any script.", "- Use the release skill."),
-      );
-      writeIn(root, ".agents/skills/release-signing/SKILL.md", skillText);
-    },
-    annotation: { edits: [claim(["H1", "H2"], { kind: "extract", title: "extract release setup" })] },
-  });
+  const extract = (budgetTokens = 5000) =>
+    gate({
+      edit: (root) => {
+        writeIn(root, "AGENTS.md", (text) =>
+          text.replace("- Use Node 18 via nvm before running any script.", "- Use the release skill."),
+        );
+        writeIn(root, ".agents/skills/release-signing/SKILL.md", skillText);
+      },
+      annotation: { edits: [claim(["H1", "H2"], { kind: "extract", title: "extract release setup" })] },
+      config: config({ budgetTokens }),
+    });
+  // A shrink step that lands one token over the cap it was made under.
+  const cap = extract().proposal.budget.projected - 1;
+  const built = extract(cap);
   assert.deepEqual(built.violations, []);
   assert.ok(built.proposal.budget.delta < 0);
   delete built.proposal.edits[0].descriptionDelta;
@@ -3407,7 +3438,7 @@ test("post-apply warnings label a newly created skill description as always-load
     decisions: { e1: "accepted" },
     repo: built.repo,
     state: built.state,
-    config: { budgetTokens: built.proposal.budget.projected - 1 },
+    config: { budgetTokens: cap },
     dryRun: true,
   });
   assert.deepEqual(results.failed, []);

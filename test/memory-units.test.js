@@ -38,6 +38,26 @@ test("a list item is still a unit", () => {
   assert.deepEqual(texts("# Rules\n\n- item\n- another item\n"), ["- item", "- another item"]);
 });
 
+test("a list interrupts prose before a thematic break without losing either instruction", () => {
+  for (const marker of ["-", "*", "+", "1.", "1)"]) {
+    for (const rule of ["---", "   ----", "- - -", "***", "___"]) {
+      const item = `${marker} Run tests.`;
+      const units = parseMemoryUnits(
+        `# Guide\nRules:\n${item}\n  before committing.\n${rule}\nKeep changes small.\n`,
+      );
+      assert.deepEqual(
+        units.map(({ text, section, startLine, endLine }) => ({ text, section, startLine, endLine })),
+        [
+          { text: "Rules:", section: "Guide", startLine: 2, endLine: 2 },
+          { text: `${item}\n  before committing.`, section: "Guide", startLine: 3, endLine: 4 },
+          { text: "Keep changes small.", section: "Guide", startLine: 6, endLine: 6 },
+        ],
+        `${marker} before ${rule}`,
+      );
+    }
+  }
+});
+
 test("a thematic break inside a fence is preserved as content", () => {
   const fenced = "Example frontmatter:\n```yaml\n---\nname: x\n---\n***\n```";
   assert.deepEqual(texts(`# Rules\n\n${fenced}\n`), [fenced]);
@@ -57,6 +77,7 @@ test("a dash run directly under a paragraph is a setext heading, not a unit", ()
 test("a dash run under a list item, quote, indented code, or fence is a break, not a setext underline", () => {
   assert.deepEqual(texts("- Keep it small.\n---\nNext.\n"), ["- Keep it small.", "Next."]);
   assert.deepEqual(texts("> Quoted rule.\n---\nNext.\n"), ["> Quoted rule.", "Next."]);
+  assert.deepEqual(texts("Rules:\n> Quoted rule.\n---\nNext.\n"), ["Rules:\n> Quoted rule.", "Next."]);
   assert.deepEqual(texts("```\ncode\n```\n---\nNext.\n"), ["```\ncode\n```", "Next."]);
   assert.deepEqual(texts("    npm test\n---\nNext.\n"), ["    npm test", "Next."], "indented code is not a title");
   assert.deepEqual(texts("\tnpm test\n---\nNext.\n"), ["\tnpm test", "Next."], "tab-indented code is not a title");

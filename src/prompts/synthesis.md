@@ -56,11 +56,12 @@ To tune an existing skill's trigger, edit its `description:` line under `./{{SKI
 
 ## Folded evidence
 
-`sessions` counts distinct corroborating observers behind the item; related transcripts
-share one observer even when their quote source labels differ. `harm-sessions` counts
-those observers with harm-class negatives. `relevance` is the share of analyzed
-sessions in which an instruction drew any evidence at all, also split by
-interactive vs non-interactive so a robot-heavy corpus cannot hide a category-specific
+Per-instruction `sessions` counts distinct transcripts with evidence; `observers`
+counts distinct corroborating observers behind that evidence; related transcripts share
+one observer even when their quote source labels differ. In gap rows, `sessions` counts
+observers. `harm-sessions` counts observers with harm-class negatives. `relevance` is the
+share of analyzed transcripts in which an instruction drew any evidence at all, also split
+by interactive vs non-interactive so a robot-heavy corpus cannot hide a category-specific
 signal.
 
 {{EVIDENCE}}

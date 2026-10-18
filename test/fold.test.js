@@ -328,6 +328,7 @@ test("instructions with no evidence still appear - they are the removal candidat
   const dead = summary.instructions.find((i) => i.instruction === "AG-003");
   assert.ok(dead, "an instruction that drew no evidence must still be reported");
   assert.equal(dead.sessions, 0);
+  assert.equal(dead.observers, 0);
   assert.equal(dead.relevance, 0);
   assert.ok(dead.tokens > 0, "its always-loaded cost is what makes it a removal candidate");
 });
@@ -679,7 +680,7 @@ test("the rendered evidence block carries counts, relevance, quotes, effects and
 
   const rendered = renderEvidenceForPrompt(summary);
   assert.match(rendered, /Sessions analyzed: 2/);
-  assert.match(rendered, /\[AG-002\] \+0 -2 harm-sessions=0 sessions=2 relevance=100\.0%/);
+  assert.match(rendered, /\[AG-002\] \+0 -2 harm-sessions=0 sessions=2 observers=2 relevance=100\.0%/);
   // The synthesis model must see what a negative MEANS, not only its sign: the effect
   // text and the harm/non-compliance class both survive into the prompt.
   assert.match(rendered, /- \[non-compliance\] "used a bare #2731" :: follow-up needed/);
@@ -706,6 +707,7 @@ test("harm-class negatives are counted per distinct session, and only explicit h
 
   const rows = new Map(summary.instructions.map((row) => [row.instruction, row]));
   assert.equal(rows.get("AG-001").harmSessions, 2, "two distinct sessions, however many harm items each filed");
+  assert.equal(rows.get("AG-001").observers, 3, "repeated items count once, including unclassified evidence");
   assert.equal(rows.get("AG-001").negative, 4);
   assert.equal(rows.get("AG-002").harmSessions, 0, "non-compliance and unclassified never count as harm");
 });
@@ -748,6 +750,7 @@ test("OMP subagents share corroboration while relevance remains per file", () =>
   const observed = (transcript) =>
     record(transcript.id, {
       transcript,
+      positive: [{ instruction: "AG-003", quote: `followed ${transcript.id}` }],
       negative: [
         { instruction: "AG-001", quote: `harm ${transcript.id}`, class: "harm" },
         { instruction: "AG-002", quote: `ignored ${transcript.id}`, class: "non-compliance" },
@@ -765,6 +768,14 @@ test("OMP subagents share corroboration while relevance remains per file", () =>
   assert.equal(oneObserver.get("AG-002").nonComplianceSessions, 1);
   assert.equal(oneObserver.get("AG-001").sessions, 2, "relevance still measures both analyzed files");
   assert.equal(oneObserver.get("AG-001").relevance, 1);
+  for (const id of ["AG-001", "AG-002", "AG-003"]) {
+    assert.equal(oneObserver.get(id).observers, 1);
+    assert.equal(oneObserver.get(id).sessions, 2);
+    assert.deepEqual(oneObserver.get(id).relevanceByInteraction, { interactive: 1, "non-interactive": 1 });
+    for (const render of [renderEvidenceForPrompt, renderEvidenceReport]) {
+      assert.match(render(parentAndChild), new RegExp(`\\[${id}\\].*sessions=2 observers=1 relevance=100\\.0%`));
+    }
+  }
 
   const independentlyCorroborated = foldEvidence([observed(parent), observed(child), observed(independent)], {
     minGapEvidence: 2,
@@ -777,6 +788,10 @@ test("OMP subagents share corroboration while relevance remains per file", () =>
   assert.equal(twoObservers.get("AG-001").harmSessions, 2);
   assert.equal(twoObservers.get("AG-002").nonComplianceSessions, 2);
   assert.equal(twoObservers.get("AG-001").sessions, 3);
+  for (const id of ["AG-001", "AG-002", "AG-003"]) {
+    assert.equal(twoObservers.get(id).observers, 2);
+    assert.equal(twoObservers.get(id).sessions, 3);
+  }
 });
 
 test("failed-trigger citations count per skill and reach the synthesis prompt with the cluster", () => {
@@ -965,9 +980,11 @@ test("an oversized high-non-compliance paragraph attributes per sentence and inv
   const quiet = summary.instructions.find((row) => row.instruction === "AG-001.1");
   const parent = summary.instructions.find((row) => row.instruction === "AG-001");
   assert.equal(hot.negative, 2);
+  assert.equal(hot.observers, 2);
   assert.equal(hot.parentId, "AG-001");
   assert.equal(hot.nonCompliance, 2);
   assert.equal(quiet.sessions, 0, "a sibling sentence is not smeared with the hot one's evidence");
+  assert.equal(quiet.observers, 0);
   assert.equal(parent, undefined, "the parent blob is not a dead removal candidate of its own");
   assert.equal(summary.oversized.length, 1);
   assert.equal(summary.oversized[0].id, "AG-001");

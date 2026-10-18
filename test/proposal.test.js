@@ -3042,6 +3042,30 @@ test("non-compliance never satisfies the removal-evidence floor; harm does", () 
   assert.equal(harmed.proposal.edits.length, 1);
 });
 
+test("deleting a list after prose and before a dash break still requires harm evidence", () => {
+  for (const harmSessions of [0, 2]) {
+    const result = gate({
+      text: "Rules:\n- Run tests.\n---\n",
+      edit: memoryEdit((text) => text.replace("- Run tests.\n", "")),
+      annotation: { edits: [claim(["H1"], { kind: "remove" })] },
+      context: {
+        summary: {
+          instructions: [{ instruction: "AG-002", harmSessions }],
+        },
+      },
+    });
+    if (harmSessions === 0) {
+      assert.equal(result.proposal.edits.length, 0);
+      assert.ok(
+        result.violations.some((violation) => /deletes \[AG-002\].*0 session\(s\) of harm-class/.test(violation)),
+      );
+    } else {
+      assert.deepEqual(result.violations, []);
+      assert.equal(result.proposal.edits.length, 1);
+    }
+  }
+});
+
 test("sentence-level harm clears removal of its oversized parent paragraph", () => {
   const blob = Array.from(
     { length: 5 },

@@ -115,7 +115,7 @@ export function parseMemoryUnits(text) {
         buffer.length &&
         /^ {0,3}\S/.test(buffer[0]) &&
         !LIST_ITEM.test(buffer[0]) &&
-        !/^\s*>/.test(buffer[0]) &&
+        !buffer.some((bufferLine) => /^\s*>/.test(bufferLine)) &&
         !buffer.some((bufferLine) => FENCE.test(bufferLine));
       if (setext) {
         const text = buffer.map((bufferLine) => bufferLine.trim()).join(" ");
@@ -137,7 +137,7 @@ export function parseMemoryUnits(text) {
       continue;
     }
     // A new list item starts a new unit; continuation lines stay with it.
-    if (isListItem && buffer.length && LIST_ITEM.test(buffer[0])) {
+    if (isListItem && buffer.length) {
       flush(i);
     }
     if (!buffer.length) bufferStart = i;

@@ -134,8 +134,26 @@ function summaryFor(sessions = 3) {
     // The removal fixtures delete AG-001/AG-002 (the first two sharp-edge bullets);
     // the removal-evidence floor needs harm-class corroboration for them.
     instructions: [
-      { instruction: "AG-001", positive: 0, negative: 2, harmSessions: 2, sessions: 2, relevance: 0.5, quotes: [] },
-      { instruction: "AG-002", positive: 0, negative: 2, harmSessions: 2, sessions: 2, relevance: 0.5, quotes: [] },
+      {
+        instruction: "AG-001",
+        positive: 0,
+        negative: 2,
+        harmSessions: 2,
+        sessions: 2,
+        observers: 2,
+        relevance: 0.5,
+        quotes: [],
+      },
+      {
+        instruction: "AG-002",
+        positive: 0,
+        negative: 2,
+        harmSessions: 2,
+        sessions: 2,
+        observers: 2,
+        relevance: 0.5,
+        quotes: [],
+      },
     ],
     gaps: [],
     totals: { positive: 1, negative: 2, gapClusters: 0, droppedGapSingletons: 0 },
@@ -404,6 +422,12 @@ for (const kind of ["rewrite", "remove"]) {
         .filter(({ argv }) => argv.includes("--file"))
         .map(({ argv }) => fs.readFileSync(argv[argv.indexOf("--file") + 1], "utf8").replace(/\s+/g, " "));
       assert.ok(prompts.length >= 2, "editing and annotation both reach the harness");
+      assert.match(prompts[0], /Per-instruction `sessions` counts distinct transcripts with evidence/);
+      assert.match(prompts[0], /`observers` counts distinct corroborating observers/);
+      assert.match(
+        prompts[0],
+        new RegExp(`\\[AG-005\\].*sessions=2 observers=${independent ? 2 : 1} relevance=100\\.0%`),
+      );
       for (const prompt of prompts) {
         assert.match(prompt, /2 distinct corroborating observers/);
         assert.match(prompt, /related transcripts share one observer/);

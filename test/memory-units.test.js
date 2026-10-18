@@ -42,9 +42,7 @@ test("a list interrupts prose before a thematic break without losing either inst
   for (const marker of ["-", "*", "+", "1.", "1)"]) {
     for (const rule of ["---", "   ----", "- - -", "***", "___"]) {
       const item = `${marker} Run tests.`;
-      const units = parseMemoryUnits(
-        `# Guide\nRules:\n${item}\n  before committing.\n${rule}\nKeep changes small.\n`,
-      );
+      const units = parseMemoryUnits(`# Guide\nRules:\n${item}\n  before committing.\n${rule}\nKeep changes small.\n`);
       assert.deepEqual(
         units.map(({ text, section, startLine, endLine }) => ({ text, section, startLine, endLine })),
         [

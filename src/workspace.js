@@ -108,7 +108,7 @@ export function prepareWorkspace({
       // one stays behind the narrowing: only a staged name can own anything.
       const owner = identity && stagedIdentities.get(identity);
       if (owner) {
-        unstageable.push({ path: logical, reason: `the same file is already staged as ${owner}` });
+        unstageable.push({ path: logical, reason: `the same file is already staged as ${owner}`, identity });
         continue;
       }
       // `originals` holds every staged file as utf-8 text, and a binary does not survive that
@@ -131,7 +131,7 @@ export function prepareWorkspace({
         // touched; the source keeps its own mode, and apply takes the mode it writes from
         // the repository file rather than from here.
         fs.chmodSync(to, (fs.statSync(from).mode & 0o777) | 0o600);
-        originals.set(logical, fs.readFileSync(from, "utf8"));
+        originals.set(logical, fs.readFileSync(to, "utf8"));
       } catch (err) {
         fs.rmSync(to, { force: true });
         originals.delete(logical);

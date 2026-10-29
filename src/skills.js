@@ -77,21 +77,25 @@ export function loadSkills(repoRoot, skillsDir) {
     } catch {
       continue;
     }
-    const frontmatter = parseFrontmatter(text);
-    skills.push({
-      name: frontmatter.name || entry.name.replace(/\.md$/, ""),
-      description: frontmatter.description || "",
-      path: (() => {
-        const relative = path.relative(repoRoot, file);
-        return relative.startsWith("..") || path.isAbsolute(relative) ? file : relative.split(path.sep).join("/");
-      })(),
-      body: skillBody(text),
-      bodyTokens: estimateTokens(text),
-      descriptionTokens: estimateTokens(frontmatter.description || ""),
-    });
+    const relative = path.relative(repoRoot, file);
+    const logical =
+      relative.startsWith("..") || path.isAbsolute(relative) ? file : relative.split(path.sep).join("/");
+    skills.push(describeSkill(logical, text, entry.name.replace(/\.md$/, "")));
   }
 
   return skills.sort((a, b) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path));
+}
+
+export function describeSkill(file, text, fallbackName) {
+  const frontmatter = parseFrontmatter(text);
+  return {
+    name: frontmatter.name || fallbackName,
+    description: frontmatter.description || "",
+    path: file,
+    body: skillBody(text),
+    bodyTokens: estimateTokens(text),
+    descriptionTokens: estimateTokens(frontmatter.description || ""),
+  };
 }
 
 /**

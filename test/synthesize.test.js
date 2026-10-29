@@ -1187,3 +1187,40 @@ test("the synthesis prompt lists stored rejection identities and reasons", () =>
   assert.match(text, /already-covered/);
   assert.doesNotMatch(text, /\(none\)/);
 });
+
+for (const alias of [false, true]) {
+  test(`rebuilt skill descriptions refresh prompt and proposal accounting${alias ? " across aliases" : ""}`, async () => {
+    const { repo, config, memoryFile, run } = setup({
+      edit: { "AGENTS.md": { replace: [[TWO_ITEMS, ""]] } },
+      annotations: [{ reply: "" }, { reply: { edits: [removal(["H1"])] } }],
+    });
+    const skill = path.join(repo.root, ".agents/skills/db/SKILL.md");
+    fs.mkdirSync(path.dirname(skill), { recursive: true });
+    fs.writeFileSync(skill, DB_SKILL);
+    if (alias) fs.symlinkSync(path.dirname(skill), path.join(repo.root, ".agents/skills/db-alias"));
+    const description = "x".repeat(2400);
+    const descriptions = alias ? 1200 : 600;
+    config.budgetTokens = memoryFile.tokens + descriptions - 320;
+    config.agents = {
+      ...agents,
+      resolve: async () => {
+        fs.writeFileSync(skill, DB_SKILL.replace("Load for database work.", description));
+        return pick;
+      },
+    };
+    const { proposal, violations } = await run();
+    assert.deepEqual(violations, []);
+    assert.equal(proposal.budget.descriptionTokens, descriptions);
+    assert.equal(proposal.budget.current, memoryFile.tokens + descriptions);
+    assert.equal(proposal.config.maxEditsPerRun, 8);
+    const prompt = fs.readFileSync(path.join(config.state.root, "prompts/synthesis-edit.md"), "utf8");
+    assert.ok(prompt.includes(`Budget: ${memoryFile.tokens + descriptions} / ${config.budgetTokens}`));
+    assert.ok(prompt.includes("At most 8 edits."));
+    assert.equal(prompt.split(` :: ${description}`).length - 1, alias ? 2 : 1);
+    const retry = fs.readFileSync(path.join(config.state.root, "prompts/synthesis-annotate-2.md"), "utf8");
+    assert.ok(retry.includes(`${memoryFile.tokens + descriptions} tokens`));
+    const applied = applyDecisions({ proposal, decisions: { e1: "accepted" }, repo, state: config.state, config });
+    assert.deepEqual(applied.failed, []);
+    assert.equal(fs.readFileSync(path.join(repo.root, "AGENTS.md"), "utf8"), AGENTS.replace(TWO_ITEMS, ""));
+  });
+}

@@ -21,6 +21,7 @@ import {
   parseSkillFile,
   prepareWorkspace,
   repoFingerprint,
+  rebaseFingerprint,
   recoveredLineCounts,
   skillStagingRefusal,
   splitRemovalHunk,
@@ -378,6 +379,7 @@ test("two links to one shared library are both billed, and exactly one of them i
     {
       path: ".agents/skills/db/SKILL.md",
       reason: "the same file is already staged as .agents/skills/database/SKILL.md",
+      identity: path.join(library, "SKILL.md"),
     },
   ]);
 });
@@ -996,3 +998,27 @@ test("a thematic break between a heading and its section never lets an extractio
     null,
   );
 });
+
+for (const relative of [".agents/skills/db/SKILL.md", ".agents/skills/db/notes.txt"]) {
+  test(`a concurrent source write after copying ${relative} cannot become a staged edit`, (t) => {
+    const repo = makeRepo({ "AGENTS.md": AGENTS, [relative]: SKILL });
+    const state = new State(repo.root).ensure();
+    const fingerprint = repoFingerprint(repo, ["AGENTS.md", relative]);
+    const copy = fs.copyFileSync;
+    t.mock.method(fs, "copyFileSync", (from, to, mode) => {
+      copy(from, to, mode);
+      if (from === path.join(repo.root, relative)) fs.writeFileSync(from, `${SKILL}Concurrent edit.\n`);
+    });
+    const workspace = prepareWorkspace({
+      state,
+      repo,
+      memoryFile: readMemoryFile(repo.root, "AGENTS.md"),
+      skillsDir: ".agents/skills",
+    });
+    rebaseFingerprint(fingerprint, workspace);
+    assert.equal(workspace.originals.get(relative), SKILL);
+    assert.equal(fs.readFileSync(path.join(workspace.root, relative), "utf8"), SKILL);
+    assert.deepEqual(measureWorkspace(workspace).changes, []);
+    assert.notEqual(repoFingerprint(repo, [relative])[relative], fingerprint[relative]);
+  });
+}

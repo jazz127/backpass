@@ -429,6 +429,9 @@ orchestrating tool) - and the
 analysis is shown the ledger's open gaps so it can cite an existing gap id instead of
 coining a paraphrase of it.
 
+With `jobs` greater than one, later Claude analysis calls wait for the first actual Claude
+invocation to finish, even when analysis falls back to Claude from another agent.
+
 **Every claim must carry a verbatim quote, and the quote must be in the trace.** Quoteless
 items are discarded - the single most important defence against a model confabulating
 influence - and so are quotes that do not actually appear in the distilled trace they claim
@@ -521,7 +524,8 @@ REMOVE, REWRITE, EXTRACT→SKILL, or MOVE. The agent does not describe edits for
 splice in - it makes them, with its harness's own file tools, in a **staging copy** of the
 memory file and project skills under `.backpass/synthesis/` (the repo itself is read-only
 to it, for grounding). Version-control internals (`.git`, `.hg`, `.svn`) and binary files
-under a skill directory stay out of the copy and are read-only. Named nested files use their own staging copies and do not stage skills
+under a skill directory stay out of the copy and are read-only. Named nested files use
+their own staging copies and do not stage skills
 (see [Nested memory files](#10-nested-memory-files-in-a-monorepo)). backpass then diffs
 against the originals and shows the agent the measured changes by id; the agent annotates each one with a title, rationale, and the
 verbatim evidence behind it. Nothing textual is ever taken from the model: every hunk's
@@ -570,8 +574,10 @@ keeps the merged change rather than guessing.
 
 A malformed answer or gate violation triggers a re-prompt naming the exact breach (at
 most two). If those also fail, backpass **fails loudly** and preserves the latest parseable
-rejected proposal, if one was produced. It never silently truncates. A harness that writes
-past the staging copy into the repo is an error, never an apply.
+rejected proposal, if one was produced. It never silently truncates. If a watched repository
+file changes during synthesis, backpass stops without a proposal and reports the change.
+When the repository file now matches the staging copy, it reports a likely direct harness
+write; otherwise, the change may have come from a concurrent editor.
 
 Not every annotate turn is an answer, and the three cases are kept apart because they call
 for different things:

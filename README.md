@@ -128,8 +128,8 @@ one command only; neither flag changes a config file or harness default.
 Harness load paths, verified for v1:
 
 - **Claude Code** loads `CLAUDE.md` from `CLAUDE_CONFIG_DIR` (default `~/.claude`)
-  and inlines `@` imports, including `~/` and absolute paths. A CLAUDE.md containing
-  only an import that resolves to the canonical user memory is a valid pointer, such
+  and inlines `@` imports, including `~/` and absolute paths. A CLAUDE.md
+  [import pointer](#9-which-file-is-the-weights) must resolve to the canonical user memory, such
   as `@~/.agents/AGENTS.md` with the default paths.
 - **Codex** loads `AGENTS.md` from `CODEX_HOME` (default `~/.codex`). It follows the
   AGENTS.md convention; `@` import is not assumed.
@@ -213,7 +213,7 @@ whole-surface run (see [Nested memory files](#10-nested-memory-files-in-a-monore
 Nothing else resolves - not a basename, a directory, a path to a SKILL.md, or an
 existing file the config does not name - and an
 unknown name fails, listing the valid ones, instead of falling back to the whole surface. A
-configured file that contains only an `@` import is rejected rather than rewritten or silently
+configured file using the [import pointer form](#9-which-file-is-the-weights) is rejected rather than rewritten or silently
 mapped to its import; the error names the imported memory file, which must itself be configured
 to be targeted. A correctly named skill whose file backpass cannot write - one resolving into a
 location nothing may write, or in project scope one resolving outside the repository - is refused
@@ -429,6 +429,9 @@ orchestrating tool) - and the
 analysis is shown the ledger's open gaps so it can cite an existing gap id instead of
 coining a paraphrase of it.
 
+With `jobs` greater than one, later Claude analysis calls wait for the first actual Claude
+invocation to finish, even when analysis falls back to Claude from another agent.
+
 **Every claim must carry a verbatim quote, and the quote must be in the trace.** Quoteless
 items are discarded - the single most important defence against a model confabulating
 influence - and so are quotes that do not actually appear in the distilled trace they claim
@@ -520,7 +523,9 @@ A high-reasoning synthesis run turns the aggregated gradients into concrete edit
 REMOVE, REWRITE, EXTRACT→SKILL, or MOVE. The agent does not describe edits for backpass to
 splice in - it makes them, with its harness's own file tools, in a **staging copy** of the
 memory file and project skills under `.backpass/synthesis/` (the repo itself is read-only
-to it, for grounding). Named nested files use their own staging copies and do not stage skills
+to it, for grounding). Version-control internals (`.git`, `.hg`, `.svn`) and binary files
+under a skill directory stay out of the copy and are read-only. Named nested files use
+their own staging copies and do not stage skills
 (see [Nested memory files](#10-nested-memory-files-in-a-monorepo)). backpass then diffs
 against the originals and shows the agent the measured changes by id; the agent annotates each one with a title, rationale, and the
 verbatim evidence behind it. Nothing textual is ever taken from the model: every hunk's
@@ -569,8 +574,10 @@ keeps the merged change rather than guessing.
 
 A malformed answer or gate violation triggers a re-prompt naming the exact breach (at
 most two). If those also fail, backpass **fails loudly** and preserves the latest parseable
-rejected proposal, if one was produced. It never silently truncates. A harness that writes
-past the staging copy into the repo is an error, never an apply.
+rejected proposal, if one was produced. It never silently truncates. If a watched repository
+file changes during synthesis, backpass stops without a proposal and reports the change.
+When the repository file now matches the staging copy, it reports a likely direct harness
+write; otherwise, the change may have come from a concurrent editor.
 
 Not every annotate turn is an answer, and the three cases are kept apart because they call
 for different things:
@@ -586,7 +593,9 @@ for different things:
 
 When a run does fail, the advice it prints comes from the condition it ended on. If the
 rejected proposal included notes, the failure prints those too instead of hiding useful
-diagnostic context. Run `backpass propose` again to start a fresh synthesis.
+diagnostic context. A failed synthesis prompt call reports the assembled prompt's measured
+UTF-8 byte size without printing its contents. That size is diagnostic context, not a
+claim that the prompt was too large. Run `backpass propose` again to start a fresh synthesis.
 
 Token deltas shown to you are measured by backpass from the actual text - never taken from
 the model's own arithmetic.
@@ -639,6 +648,9 @@ every skill's name and trigger line, stamps a gap it judges covered by an existi
 with `coveredBySkill`, and the gap ledger corroborates those citations across observers
 before synthesis is told to fix the trigger. The same coverage check retires a ledger gap
 once a skill's content answers it, so a gap resolved by extraction stops resurfacing.
+The analysis index lists each skill file once by realpath, keeping its first loaded path
+when symlinks across harness roots share a file. Distinct files remain separate even when
+their names match. This does not change [per-copy budget accounting](#6-the-budget---model-size).
 
 Skills are protected by the same floors as the memory file: text deleted from a skill
 file is a removal, and since no evidence can attribute to skill text, no deletion there
@@ -676,6 +688,12 @@ It cannot be combined with `--no-ui`.
 The flag is repeatable: all supplied vectors are checked together as one vector, each must name at least one edit, and naming an edit twice is refused, even across flags.
 Edits it does not name stay untouched, and every gate below still applies.
 
+After a successful non-dry-run apply with at least one accepted edit, the saved proposal
+records `appliedAt` and `appliedBy: "apply"`. A second apply refuses it before opening
+review or writing anything. Run `backpass` again to produce a fresh proposal, including
+for edits skipped in the completed review. Dry runs and reviews with no accepted edits
+leave the proposal unstamped and available to review again.
+
 The live budget gauge is not just a readout. Apply rechecks the accepted subset against
 the same budget gate as synthesis: stay under the cap, or shrink if the file is already
 over. An incompatible set writes nothing and does not record rejections, so you can pick
@@ -697,8 +715,9 @@ refuses the whole write if any created skill target already exists or two accept
 resolve to the same file.
 
 Skills and non-memory files are written only after every edit has composed, with the memory
-file committed last. A later write failure rolls back files, skills, and loading-layout
-entries created earlier in that round. If another process changes a committed file before
+file committed last. A later write failure, including failure to save the proposal's
+applied stamp, leaves the proposal unstamped and rolls back files, skills, and loading-layout
+entries created earlier in that round so the apply can be retried. If another process changes a committed file before
 rollback reaches it, apply leaves that change untouched and reports the rollback conflict.
 
 For compatibility, proposals created by older backpass versions that do not contain a
@@ -717,9 +736,11 @@ backpass apply --decisions "e1=accepted e2=rejected:disagree"   # decided elsewh
 `memoryFiles` is an ordered list (default `["AGENTS.md", "CLAUDE.md"]`); the first one
 that exists is the root file a run optimizes, so **AGENTS.md is canonical**. Named
 [nested files](#10-nested-memory-files-in-a-monorepo) are additional weights, not
-separate root files. A `CLAUDE.md` containing only the `@AGENTS.md` import (apart from
-blank lines and HTML comments), or a symlink resolving to the same file, is treated as
-a pointer:
+separate root files. A `CLAUDE.md` is a pointer when it contains exactly one import
+resolving to the primary file, such as `@AGENTS.md` or `@./AGENTS.md`, with optional
+leading ATX headings (`#` through `######`), blank lines and HTML comments. Prose,
+additional imports, and headings after the import make it a separate file. A symlink
+resolving to the primary file is also a pointer:
 
 - Optimizing AGENTS.md covers both harness families and the pointer stays valid. Nothing
   to report.
@@ -800,8 +821,8 @@ weight of its own; a missing file is reported, never created:
   `sampledSessions`, `minGapEvidence`, and `belowMinGapEvidence`. The count is
   report-only and never gates a run.
 
-Each nested directory keeps the pointer model above: name its canonical file, and a
-sibling `AGENTS.md` or `CLAUDE.md` that only imports it needs nothing, while a sibling
+Each nested directory keeps the [pointer model above](#9-which-file-is-the-weights): name its canonical file, and a
+sibling `CLAUDE.md` that points to it needs nothing, while a sibling
 with content of its own is warned about. An entry that is only a pointer is refused. A file listed in both
 `memoryFiles` and `nestedMemoryFiles` is nested. `--target` and `--memory-file` name
 exactly the files a run trains, so neither trains a nested file.

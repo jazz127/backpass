@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { extractJson, isBlankOutput, openSession, usageRecord } from "./acpx.js";
+import { AcpxError, extractJson, isBlankOutput, openSession, usageRecord } from "./acpx.js";
 import { expandHomePath, userClaudeSkillsDir } from "./config.js";
 import { renderEvidenceForPrompt } from "./fold.js";
 import { renderInstructionIndex, resolveMemoryPath } from "./memory.js";
@@ -9,6 +9,7 @@ import { renderPrompt, render, loadPrompt } from "./prompts.js";
 import { buildProposal, effectiveMaxEdits, ProposalViolation, renderChangesForPrompt } from "./proposal.js";
 import { routeForPick } from "./provenance.js";
 import {
+  describeSkill,
   loadProjectSkills,
   renderSkillIndex,
   resolveOverflowTarget,
@@ -20,8 +21,11 @@ import { SURFACE_TARGET } from "./target.js";
 import { emitProgress } from "./progress.js";
 import {
   READ_ONLY_SEARCH_PATH,
+  isSkillFilePath,
   measureWorkspace,
   prepareWorkspace,
+  rebaseFingerprint,
+  repoFilePath,
   repoFingerprint,
   workspacePathFor,
 } from "./workspace.js";
@@ -168,11 +172,13 @@ function harnessCountsOf(transcripts) {
  * reaches that decision. An ordinary repository skill stays fingerprinted either way. A
  * fingerprinted path can still resolve outside the repository - that is the ordinary
  * user-scope layout - so a change there is reported for what it is rather than as a direct
- * repository edit. A configured `skillSearchPaths` root is the one withheld reason that
- * stays fingerprinted anyway: its read-only promise is not "backpass will never write
- * this," it is "nothing may ever write this," so a change there must still fail the run.
+ * repository edit. A change inside the repository is reported as what was observed, since
+ * a concurrent editor in a shared workspace looks the same as a harness (#199). A
+ * configured `skillSearchPaths` root is the one withheld reason that stays fingerprinted
+ * anyway: its read-only promise is not "backpass will never write this," it is "nothing
+ * may ever write this," so a change there must still fail the run.
  */
-function assertRepoUntouched(repo, before, workspaceRoot) {
+function assertRepoUntouched(repo, before, workspace) {
   const after = repoFingerprint(repo, Object.keys(before));
   const moved = Object.keys(before).filter((file) => before[file] !== after[file]);
   if (!moved.length) return;
@@ -184,12 +190,29 @@ function assertRepoUntouched(repo, before, workspaceRoot) {
       return false;
     }
   };
+  // The fingerprint only proves a file changed, not who changed it: in a shared workspace
+  // another session or a cron job can edit it mid-run. The harness is named only when the
+  // repository file now equals the staging copy, which a bystander has no reason to produce.
+  const matchesStaging = (file) => {
+    const staged = workspace.stagedPaths?.get(file) ?? workspacePathFor(file);
+    try {
+      return (
+        fs.readFileSync(path.join(workspace.root, staged), "utf8") === fs.readFileSync(repoFilePath(repo, file), "utf8")
+      );
+    } catch {
+      return false;
+    }
+  };
   const inside = moved.filter(insideRepo);
   const outside = moved.filter((file) => !inside.includes(file));
+  const wroteThrough = inside.filter(matchesStaging);
   const claims = [];
   if (inside.length) {
+    claims.push(`${inside.join(", ")} changed in the repository during synthesis`);
+  }
+  if (wroteThrough.length) {
     claims.push(
-      `synthesis changed ${inside.join(", ")} in the repository directly instead of the staging copy (${workspaceRoot})`,
+      `${wroteThrough.join(", ")} now matches the staging copy (${workspace.root}), so the synthesis harness likely wrote it directly`,
     );
   }
   if (outside.length) {
@@ -200,9 +223,11 @@ function assertRepoUntouched(repo, before, workspaceRoot) {
   }
   throw new UserError(
     `${claims.join("; also ")}; nothing was proposed`,
-    inside.length
+    wroteThrough.length
       ? `inspect the change with \`git diff\`, restore the file, and re-run - a harness that edits outside its cwd cannot be trusted with the synthesis role`
-      : `inspect the file and re-run - either the synthesis harness wrote through the link to a skill it was told is read-only, or another process changed the shared library mid-run`,
+      : inside.length
+        ? `inspect the change with \`git diff\` and re-run - another process (a concurrent agent session or a scheduled job) may have edited the file mid-run; run from a worktree snapshot if other writers share this directory, and if nothing else was writing, suspect the synthesis harness`
+        : `inspect the file and re-run - either the synthesis harness wrote through the link to a skill it was told is read-only, or another process changed the shared library mid-run`,
   );
 }
 
@@ -423,7 +448,7 @@ async function annotateLoop({
   let editMadeNoChanges = false;
 
   for (let turn = 1; ; turn += 1) {
-    assertRepoUntouched(repo, fingerprint, workspace.root);
+    assertRepoUntouched(repo, fingerprint, workspace);
     const measured = measureWorkspace(workspace);
     if (turn === 1) editMadeNoChanges = measured.changes.length === 0 && !(measured.stray || []).length;
 
@@ -452,7 +477,7 @@ async function annotateLoop({
     // The agent may keep editing during an annotate turn; the ids it was answering about
     // are then stale, so the answer is dropped and the fresh measurement shown instead.
     // That is a measurement problem, not a failed annotation: it costs no attempt.
-    assertRepoUntouched(repo, fingerprint, workspace.root);
+    assertRepoUntouched(repo, fingerprint, workspace);
     if (measureWorkspace(workspace).signature !== measured.signature) {
       remeasures += 1;
       justRemeasured = true;
@@ -556,21 +581,7 @@ export async function synthesizeProposal({
 }) {
   config.state.clearProposal();
   const harnessCounts = harnessCountsOf(transcripts);
-  const {
-    state,
-    rejections,
-    overflow,
-    skillDirs,
-    skillFiles,
-    searchPathRoots,
-    target,
-    nested,
-    descriptionTokens,
-    maxEdits,
-    common,
-    context,
-    promptDir,
-  } = synthesisSetup({
+  const setup = synthesisSetup({
     memoryFile,
     summary,
     config,
@@ -580,6 +591,8 @@ export async function synthesizeProposal({
     provenance,
     routing,
   });
+  const { state, rejections, overflow, skillDirs, searchPathRoots, target, nested, common, context, promptDir } = setup;
+  let { skillFiles, descriptionTokens, maxEdits } = setup;
 
   // Staging holds only the write surface: every skill on a surface run, none of them on
   // a memory-file target (new extracts are still measured), just the one on a skill target.
@@ -603,46 +616,48 @@ export async function synthesizeProposal({
   // confined out are also marked, so a run that narrows nothing still says so.
   const readOnlyReason = (file) =>
     workspace.unstageable.find((entry) => file === entry.path || file.startsWith(`${entry.path}/`))?.reason || null;
-  const stagedSkillFiles = skillFiles.map((skill) => ({
-    ...skill,
-    path: workspace.stagedPaths.get(skill.path) || skill.path,
-    readOnly: readOnlyReason(skill.path),
-  }));
-
-  const editValues = {
-    ...common,
-    TARGET_RULE: targetRule(
-      target,
-      workspace.memoryWorkspacePath,
-      stagedSkillsDir,
-      target.kind === "skill" ? workspace.stagedPaths.get(target.path) || workspacePathFor(target.path) : null,
-      stagedSkillFiles.filter((skill) => skill.readOnly),
-    ),
-    REPO_NAME: repo.name,
-    REPO_ROOT: repo.root,
-    TRANSCRIPT_COUNT: String(summary.analyzedSessions),
-    RUN_NOTE: runNote,
-    HARNESS_SUMMARY:
-      Object.entries(harnessCounts)
-        .map(([h, n]) => `${h} ${n}`)
-        .join(" · ") || "none",
-    CURRENT_TOKENS: String(memoryFile.tokens + descriptionTokens),
-    BUDGET_TOKENS: String(config.budgetTokens),
-    BUDGET_STATE: budgetState(memoryFile, config, descriptionTokens),
-    INSTRUCTION_INDEX: renderInstructionIndex(memoryFile),
-    SKILLS_DIR: stagedSkillsDir,
-    SKILL_INDEX: nested
-      ? "(skills belong to the root surface; a nested memory file run does not edit them)"
-      : renderSkillIndex(stagedSkillFiles),
-    BUDGET_COUNT: nested
-      ? "The count is this file alone: it loads on top of the root memory\nfile, which has a budget of its own."
-      : "The count is this file PLUS every skill's `description:` line;\nskill bodies are free until triggered.",
-    EVIDENCE: renderEvidenceForPrompt(summary),
-    REJECTIONS: renderRejections(rejections),
-  };
-
   const editPromptFile = path.join(promptDir, "synthesis-edit.md");
-  fs.writeFileSync(editPromptFile, renderPrompt("synthesis", editValues));
+  const writeEditPrompt = () => {
+    const stagedSkillFiles = skillFiles.map((skill) => ({
+      ...skill,
+      path: workspace.stagedPaths.get(skill.path) || skill.path,
+      readOnly: readOnlyReason(skill.path),
+    }));
+
+    const editValues = {
+      ...common,
+      TARGET_RULE: targetRule(
+        target,
+        workspace.memoryWorkspacePath,
+        stagedSkillsDir,
+        target.kind === "skill" ? workspace.stagedPaths.get(target.path) || workspacePathFor(target.path) : null,
+        stagedSkillFiles.filter((skill) => skill.readOnly),
+      ),
+      REPO_NAME: repo.name,
+      REPO_ROOT: repo.root,
+      TRANSCRIPT_COUNT: String(summary.analyzedSessions),
+      RUN_NOTE: runNote,
+      HARNESS_SUMMARY:
+        Object.entries(harnessCounts)
+          .map(([h, n]) => `${h} ${n}`)
+          .join(" · ") || "none",
+      CURRENT_TOKENS: String(memoryFile.tokens + descriptionTokens),
+      BUDGET_TOKENS: String(config.budgetTokens),
+      BUDGET_STATE: budgetState(memoryFile, config, descriptionTokens),
+      INSTRUCTION_INDEX: renderInstructionIndex(memoryFile),
+      SKILLS_DIR: stagedSkillsDir,
+      SKILL_INDEX: nested
+        ? "(skills belong to the root surface; a nested memory file run does not edit them)"
+        : renderSkillIndex(stagedSkillFiles),
+      BUDGET_COUNT: nested
+        ? "The count is this file alone: it loads on top of the root memory\nfile, which has a budget of its own."
+        : "The count is this file PLUS every skill's `description:` line;\nskill bodies are free until triggered.",
+      EVIDENCE: renderEvidenceForPrompt(summary),
+      REJECTIONS: renderRejections(rejections),
+    };
+
+    fs.writeFileSync(editPromptFile, renderPrompt("synthesis", editValues));
+  };
 
   // A search-path skill is unstageable like any other read-only skill, but unlike the
   // rest of them the read-only promise it carries must be enforceable: a direct write to
@@ -701,11 +716,20 @@ export async function synthesizeProposal({
   const holder = {
     session: null,
     ranWith,
-    prompt(args) {
+    async prompt(args) {
       if (!this.session) throw new Error("synthesis session is not open");
-      return this.session.prompt(args);
+      // Measure the assembled UTF-8 artifact before handing it to the harness. Size is
+      // diagnostic context for any failed turn, not a verdict about why it failed.
+      const promptBytes = fs.statSync(args.promptFile).size;
+      try {
+        return await this.session.prompt(args);
+      } catch (err) {
+        if (err instanceof AcpxError) err.message += `\nSynthesis prompt size: ${promptBytes} UTF-8 bytes.`;
+        throw err;
+      }
     },
   };
+  let attempted = false;
   const editResult = await config.agents.withFallthrough("synthesis", async (current) => {
     ranWith = current.agent;
     holder.ranWith = current.agent;
@@ -715,11 +739,39 @@ export async function synthesizeProposal({
       const currentRoute = routeForPick(config, current);
       if (JSON.stringify(currentRoute) !== JSON.stringify(context.provenance.routeProfile.synthesisResolved)) {
         rejections.entries = {};
-        fs.writeFileSync(editPromptFile, renderPrompt("synthesis", { ...editValues, REJECTIONS: "(none)" }));
       }
       context.provenance.routeProfile.synthesisResolved = currentRoute;
     }
+    // A candidate after the first runs behind a harness that may already have written to the
+    // repository; rebasing over that write would hide it, so it is reported before the rebuild.
+    if (attempted) assertRepoUntouched(repo, fingerprint, workspace);
     workspace = prepareWorkspace(workspaceOptions);
+    const snapshotPaths = new Set([
+      ...skillFiles.map((skill) => skill.path),
+      ...[...workspace.originals.keys()].filter((file) => file !== memoryFile.path && isSkillFilePath(file, skillDirs)),
+    ]);
+    const previousSkills = new Map(skillFiles.map((skill) => [skill.path, skill]));
+    skillFiles = [...snapshotPaths]
+      .map((file) => {
+        const identity = workspace.unstageable.find((entry) => entry.path === file)?.identity;
+        const owner = workspace.stagedIdentities.get(identity);
+        const text = workspace.originals.get(file) ?? workspace.originals.get(owner);
+        const dir = skillDirs.find((dir) => isSkillFilePath(file, dir));
+        const fallbackName = path.relative(dir, file).split(path.sep)[0].replace(/\.md$/, "");
+        return text === undefined ? previousSkills.get(file) : describeSkill(file, text, fallbackName);
+      })
+      .sort((a, b) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path));
+    for (const skill of skillFiles) {
+      if (workspace.originals.has(skill.path) && !(skill.path in fingerprint)) fingerprint[skill.path] = null;
+    }
+    rebaseFingerprint(fingerprint, workspace);
+    context.skillFiles = skillFiles;
+    descriptionTokens = skillDescriptionTokens(skillFiles);
+    maxEdits = effectiveMaxEdits(memoryFile, config, descriptionTokens);
+    common.MAX_EDITS = String(maxEdits);
+    common.BUDGET_RULE = budgetRule(memoryFile, config, maxEdits, descriptionTokens, { extraction: !nested });
+    writeEditPrompt();
+    attempted = true;
     progress("edit", { attempt: 1 });
     holder.session = await openSession({
       agent: current.agent,
@@ -730,7 +782,7 @@ export async function synthesizeProposal({
       writeAccess: true,
     });
     try {
-      return await holder.session.prompt({
+      return await holder.prompt({
         promptFile: editPromptFile,
         approveAll: true,
         timeoutSeconds,

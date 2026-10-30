@@ -31,10 +31,15 @@ if (argv.includes("sessions")) {
   if (argv.includes("new")) process.stdout.write("fake-session-id\\n");
   process.exit(0);
 }
-if (argv.includes("set")) process.exit(0);
+if (argv.includes("set") || argv.includes("set-mode")) process.exit(0);
 const fileAt = argv.indexOf("--file");
 if (fileAt < 0) process.exit(2);
 const prompt = fs.readFileSync(argv[fileAt + 1], "utf8");
+const phase = prompt.includes("## Measured changes") ? "annotate" : "edit";
+if (script.fail === phase) {
+  process.stderr.write("synthetic adapter failure");
+  process.exit(1);
+}
 const statePath = process.env.FAKE_ACPX_STATE;
 const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, "utf8")) : { annotate: 0 };
 function applyEdits(edits) {
@@ -79,6 +84,8 @@ const { parseMemoryUnits, readMemoryFile } = await import("../src/memory.js");
 const { foldEvidence } = await import("../src/fold.js");
 const { ProposalViolation } = await import("../src/proposal.js");
 const { State } = await import("../src/state.js");
+const { AcpxError } = await import("../src/acpx.js");
+const { AgentResolver } = await import("../src/agents.js");
 const { UserError, setLoggerSink } = await import("../src/logger.js");
 const { workspacePathFor } = await import("../src/workspace.js");
 const { makeRepo } = await import("./helpers/staging.js");
@@ -223,6 +230,57 @@ function setup(
   return { repo, config, memoryFile, externalSkillsDir, run, calls };
 }
 
+test("failed synthesis reports the failed prompt's UTF-8 bytes without its contents", async () => {
+  for (const { phase, repeats } of [
+    { phase: "edit", repeats: 1 },
+    { phase: "edit", repeats: 180_000 },
+    { phase: "annotate", repeats: 1 },
+  ]) {
+    const privateText = `SYNTH_PRIVATE_${"密🙂".repeat(repeats)}`;
+    const { config, run, calls } = setup(
+      { fail: phase, edit: {}, annotations: [] },
+      {
+        text: `# Memory\n\n- ${privateText}\n`,
+        overrides: { synthesis: { agent: "codex", model: null } },
+      },
+    );
+    config.agents = new AgentResolver(config);
+    await assert.rejects(run, (err) => {
+      if (phase === "edit") {
+        assert.ok(err instanceof UserError);
+        assert.match(err.message, /pinned synthesis agent codex/);
+        assert.match(err.hint, /check the codex\/acpx failure above and retry/);
+      } else {
+        assert.ok(err instanceof AcpxError);
+        assert.equal(err.code, 1);
+        assert.equal(err.stderr, "synthetic adapter failure");
+      }
+      assert.equal(err.cause, undefined);
+      assert.match(err.message, /synthetic adapter failure/);
+      const invocation = calls()
+        .filter((call) => call.argv.includes("--file"))
+        .at(-1);
+      const promptFile = invocation.argv[invocation.argv.indexOf("--file") + 1];
+      const prompt = fs.readFileSync(promptFile, "utf8");
+      const bytes = Buffer.byteLength(prompt, "utf8");
+      assert.match(err.message, new RegExp(`synthesis prompt size: ${bytes} UTF-8 bytes`, "i"));
+      assert.match(err.stack, new RegExp(`synthesis prompt size: ${bytes} UTF-8 bytes`, "i"));
+      if (phase === "edit") {
+        assert.ok(bytes > prompt.length, "non-ASCII bytes must not be counted as characters");
+        assert.equal(bytes > 1_000_000, repeats > 1);
+      }
+      assert.ok(!err.message.includes("SYNTH_PRIVATE_"));
+      assert.ok(!err.stack.includes("SYNTH_PRIVATE_"));
+      assert.ok(!err.message.includes("too large"), "size is context, not an inferred cause");
+      return true;
+    });
+    assert.ok(
+      calls().some((call) => call.argv.includes("close")),
+      "failed sessions are closed",
+    );
+  }
+});
+
 test("root and nested synthesis both refuse direct writes to the other memory file", async () => {
   for (const pass of ["root", "nested"]) {
     const { repo, config, run } = setup(
@@ -256,7 +314,7 @@ test("root and nested synthesis both refuse direct writes to the other memory fi
       (err) =>
         err instanceof UserError &&
         err.message.includes(
-          `synthesis changed ${pass === "root" ? nestedPath : "AGENTS.md"} in the repository directly`,
+          `${pass === "root" ? nestedPath : "AGENTS.md"} changed in the repository during synthesis`,
         ),
     );
     assert.equal(fs.readFileSync(target, "utf8"), "# Direct write\n");
@@ -531,7 +589,49 @@ test("a harness that writes to the repository instead of the staging copy is ref
   );
   await assert.rejects(run(), (err) => {
     assert.ok(err instanceof UserError);
-    assert.match(err.message, /synthesis changed AGENTS\.md in the repository directly/);
+    assert.match(err.message, /AGENTS\.md changed in the repository during synthesis/);
+    return true;
+  });
+});
+
+test("a change to a watched repo file during synthesis is reported as observed, not blamed on the harness", async () => {
+  const { repo, run } = setup({ edit: {} });
+  // The fake cannot tell a concurrent editor from a harness: it just writes the repo file.
+  fs.writeFileSync(
+    process.env.FAKE_ACPX_SCRIPT,
+    JSON.stringify({
+      edit: { [path.join(repo.root, "AGENTS.md")]: { replace: [[TWO_ITEMS, ""]] } },
+      annotations: [{ reply: { edits: [] } }],
+    }),
+  );
+  await assert.rejects(run(), (err) => {
+    assert.ok(err instanceof UserError);
+    assert.match(err.message, /AGENTS\.md changed in the repository during synthesis; nothing was proposed/);
+    assert.doesNotMatch(err.message, /harness|staging copy|directly/);
+    assert.match(err.hint, /another process \(a concurrent agent session or a scheduled job\)/);
+    assert.doesNotMatch(err.hint, /cannot be trusted/);
+    return true;
+  });
+});
+
+test("a repo file that now equals the staging copy is still attributed to the harness", async () => {
+  const { repo, run } = setup({ edit: {} });
+  const edit = { replace: [[TWO_ITEMS, ""]] };
+  fs.writeFileSync(
+    process.env.FAKE_ACPX_SCRIPT,
+    JSON.stringify({
+      edit: { "AGENTS.md": edit, [path.join(repo.root, "AGENTS.md")]: edit },
+      annotations: [{ reply: { edits: [] } }],
+    }),
+  );
+  await assert.rejects(run(), (err) => {
+    assert.ok(err instanceof UserError);
+    assert.match(err.message, /AGENTS\.md changed in the repository during synthesis/);
+    assert.match(
+      err.message,
+      /AGENTS\.md now matches the staging copy .*so the synthesis harness likely wrote it directly/,
+    );
+    assert.match(err.hint, /cannot be trusted with the synthesis role/);
     return true;
   });
 });
@@ -580,7 +680,11 @@ test("a skill target in a relative external directory is staged and uses its act
 });
 
 test("an agent that changes nothing yields an empty proposal, never an invented edit", async () => {
-  const { run } = setup({ edit: {}, annotations: [{ reply: { edits: [], notes: ["the evidence is too thin"] } }] });
+  const { config, run } = setup(
+    { edit: {}, annotations: [{ reply: { edits: [], notes: ["the evidence is too thin"] } }] },
+    { overrides: { synthesis: { agent: "codex", model: null } } },
+  );
+  config.agents = new AgentResolver(config);
   const { proposal, violations } = await run();
   assert.deepEqual(violations, []);
   assert.equal(proposal.edits.length, 0);
@@ -815,7 +919,7 @@ test("a skill target stages that skill alone; a staged write to AGENTS.md is ref
       annotations: [{ reply: { edits: [] } }],
     }),
   );
-  await assert.rejects(direct.run(), /synthesis changed AGENTS\.md in the repository directly/);
+  await assert.rejects(direct.run(), /AGENTS\.md changed in the repository during synthesis/);
 });
 
 test("an ordinary in-repo skill stays fingerprinted, whether or not the run narrows to it", async () => {
@@ -838,10 +942,114 @@ test("an ordinary in-repo skill stays fingerprinted, whether or not the run narr
 
     await assert.rejects(guarded.run(), (err) => {
       assert.ok(err instanceof UserError, `${target ? "targeted" : "surface"} run: ${err}`);
-      assert.match(err.message, /synthesis changed \.agents\/skills\/db\/SKILL\.md in the repository directly/);
+      assert.match(err.message, /\.agents\/skills\/db\/SKILL\.md changed in the repository during synthesis/);
       return true;
     });
   }
+});
+
+test("a skill another process edits after the fingerprint but before staging is rebuilt is not blamed on the harness", async () => {
+  const { repo, config, run } = setup({
+    edit: { "AGENTS.md": { replace: [[TWO_ITEMS, ""]] } },
+    annotations: [{ reply: { edits: [removal(["H1"])] } }],
+  });
+  const skill = path.join(repo.root, ".agents/skills/db/SKILL.md");
+  fs.mkdirSync(path.dirname(skill), { recursive: true });
+  fs.writeFileSync(skill, DB_SKILL);
+  // `resolve` runs after the fingerprint is taken and before the staging copy is rebuilt.
+  config.agents = {
+    ...agents,
+    resolve: async () => {
+      fs.writeFileSync(skill, DB_SKILL.replace("Keep transactions short.", "Keep every transaction short."));
+      return pick;
+    },
+  };
+
+  const { proposal, violations } = await run();
+  assert.deepEqual(violations, []);
+  assert.equal(proposal.edits.length, 1);
+  const staged = path.join(config.state.root, "synthesis/.agents/skills/db/SKILL.md");
+  assert.match(fs.readFileSync(staged, "utf8"), /Keep every transaction short\./);
+});
+
+test("an edit after the staging rebuild is still reported even when an earlier one was absorbed", async () => {
+  const { repo, config, run } = setup({ edit: {} });
+  const skill = path.join(repo.root, ".agents/skills/db/SKILL.md");
+  fs.mkdirSync(path.dirname(skill), { recursive: true });
+  fs.writeFileSync(skill, DB_SKILL);
+  config.agents = {
+    ...agents,
+    resolve: async () => {
+      fs.writeFileSync(skill, DB_SKILL.replace("Keep transactions short.", "Keep every transaction short."));
+      return pick;
+    },
+  };
+  fs.writeFileSync(
+    process.env.FAKE_ACPX_SCRIPT,
+    JSON.stringify({
+      edit: { [skill]: { replace: [["Keep every transaction short.", "Keep transactions under a second."]] } },
+      annotations: [{ reply: { edits: [] } }],
+    }),
+  );
+
+  await assert.rejects(run(), (err) => {
+    assert.ok(err instanceof UserError);
+    assert.match(err.message, /\.agents\/skills\/db\/SKILL\.md changed in the repository during synthesis/);
+    assert.doesNotMatch(err.message, /staging copy/);
+    return true;
+  });
+});
+
+test("a direct write by a candidate that then falls through is reported, not absorbed by the next rebuild", async () => {
+  const { repo, config, run } = setup({ edit: {} });
+  const skill = path.join(repo.root, ".agents/skills/db/SKILL.md");
+  fs.mkdirSync(path.dirname(skill), { recursive: true });
+  fs.writeFileSync(skill, DB_SKILL);
+  // The first candidate edits the repository skill and is then given up on (an expired login,
+  // say); the second candidate must not start from a staging copy that includes that write.
+  config.agents = {
+    resolve: async () => pick,
+    withFallthrough: async (_role, fn) => {
+      await fn(pick);
+      return fn(pick);
+    },
+  };
+  fs.writeFileSync(
+    process.env.FAKE_ACPX_SCRIPT,
+    JSON.stringify({
+      edit: { [skill]: DB_SKILL.replace("Keep transactions short.", "Keep every transaction short.") },
+      annotations: [{ reply: { edits: [] } }],
+    }),
+  );
+
+  await assert.rejects(run(), (err) => {
+    assert.ok(err instanceof UserError);
+    assert.match(err.message, /\.agents\/skills\/db\/SKILL\.md changed in the repository during synthesis/);
+    return true;
+  });
+});
+
+test("a write-through to a memory file configured by absolute path is still attributed to the harness", async () => {
+  const { repo, run } = setup({ edit: {} });
+  const absolute = path.join(repo.root, "AGENTS.md");
+  const edit = { replace: [[TWO_ITEMS, ""]] };
+  fs.writeFileSync(
+    process.env.FAKE_ACPX_SCRIPT,
+    JSON.stringify({
+      edit: { [workspacePathFor(absolute)]: edit, [absolute]: edit },
+      annotations: [{ reply: { edits: [] } }],
+    }),
+  );
+
+  await assert.rejects(run({ memoryFile: readMemoryFile(repo.root, absolute) }), (err) => {
+    assert.ok(err instanceof UserError);
+    assert.match(
+      err.message,
+      new RegExp(`${absolute.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} now matches the staging copy`),
+    );
+    assert.match(err.hint, /cannot be trusted with the synthesis role/);
+    return true;
+  });
 });
 
 test("a staged skill that resolves outside the repository is reported as such, not as a direct repo edit", async () => {
@@ -865,7 +1073,7 @@ test("a staged skill that resolves outside the repository is reported as such, n
       err.message.includes(`${skillPath} changed during synthesis; that path resolves outside the repository`),
       err.message,
     );
-    assert.doesNotMatch(err.message, /in the repository directly/);
+    assert.doesNotMatch(err.message, /in the repository during synthesis/);
     assert.match(err.hint, /another process changed the shared library mid-run/);
     return true;
   });
@@ -979,3 +1187,40 @@ test("the synthesis prompt lists stored rejection identities and reasons", () =>
   assert.match(text, /already-covered/);
   assert.doesNotMatch(text, /\(none\)/);
 });
+
+for (const alias of [false, true]) {
+  test(`rebuilt skill descriptions refresh prompt and proposal accounting${alias ? " across aliases" : ""}`, async () => {
+    const { repo, config, memoryFile, run } = setup({
+      edit: { "AGENTS.md": { replace: [[TWO_ITEMS, ""]] } },
+      annotations: [{ reply: "" }, { reply: { edits: [removal(["H1"])] } }],
+    });
+    const skill = path.join(repo.root, ".agents/skills/db/SKILL.md");
+    fs.mkdirSync(path.dirname(skill), { recursive: true });
+    fs.writeFileSync(skill, DB_SKILL);
+    if (alias) fs.symlinkSync(path.dirname(skill), path.join(repo.root, ".agents/skills/db-alias"));
+    const description = "x".repeat(2400);
+    const descriptions = alias ? 1200 : 600;
+    config.budgetTokens = memoryFile.tokens + descriptions - 320;
+    config.agents = {
+      ...agents,
+      resolve: async () => {
+        fs.writeFileSync(skill, DB_SKILL.replace("Load for database work.", description));
+        return pick;
+      },
+    };
+    const { proposal, violations } = await run();
+    assert.deepEqual(violations, []);
+    assert.equal(proposal.budget.descriptionTokens, descriptions);
+    assert.equal(proposal.budget.current, memoryFile.tokens + descriptions);
+    assert.equal(proposal.config.maxEditsPerRun, 8);
+    const prompt = fs.readFileSync(path.join(config.state.root, "prompts/synthesis-edit.md"), "utf8");
+    assert.ok(prompt.includes(`Budget: ${memoryFile.tokens + descriptions} / ${config.budgetTokens}`));
+    assert.ok(prompt.includes("At most 8 edits."));
+    assert.equal(prompt.split(` :: ${description}`).length - 1, alias ? 2 : 1);
+    const retry = fs.readFileSync(path.join(config.state.root, "prompts/synthesis-annotate-2.md"), "utf8");
+    assert.ok(retry.includes(`${memoryFile.tokens + descriptions} tokens`));
+    const applied = applyDecisions({ proposal, decisions: { e1: "accepted" }, repo, state: config.state, config });
+    assert.deepEqual(applied.failed, []);
+    assert.equal(fs.readFileSync(path.join(repo.root, "AGENTS.md"), "utf8"), AGENTS.replace(TWO_ITEMS, ""));
+  });
+}

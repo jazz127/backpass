@@ -324,6 +324,7 @@ async function analyzeOne({
   config,
   repo,
   modelCwd = null,
+  invokeAnalysis,
   slot = 0,
   openGapIndex = "(none yet)",
   skillIndex = "(this repo has no skills)",
@@ -406,9 +407,11 @@ async function analyzeOne({
       };
       // Route effortful calls through a fresh per-transcript session so each harness's
       // invocation-scoped overlay or safe fallback is applied; otherwise one-shot is cheaper.
-      return runModelCall(call, pick, {
-        sessionName: () => `backpass-analysis-${process.pid}-${slot}-${++callCounter}`,
-      });
+      return invokeAnalysis(pick, () =>
+        runModelCall(call, pick, {
+          sessionName: () => `backpass-analysis-${process.pid}-${slot}-${++callCounter}`,
+        }),
+      );
     });
     for (const note of result.notes || []) noteOnce(note);
 
@@ -599,11 +602,24 @@ export async function analyzeTranscripts({
           path: path.isAbsolute(skill.path) ? skill.path : path.join(repo.root, skill.path),
         }))
       : skills,
+    repo.root,
   );
+
+  let claudeWarmup = null;
+  const invokeAnalysis = (current, invoke) => {
+    if (current.agent !== "claude" || config.jobs <= 1) return invoke();
+    if (claudeWarmup) return claudeWarmup.then(invoke);
+    const first = invoke();
+    claudeWarmup = first.then(
+      () => {},
+      () => {},
+    );
+    return first;
+  };
 
   let done = 0;
   const evidenceTotals = { positive: 0, negative: 0, gaps: 0 };
-  await pool(pending, config.jobs, async (transcript, _index, slot) => {
+  const analyzePending = async (transcript, _index, slot) => {
     const base = {
       transcript: transcriptMetadata(transcript),
       memoryHash,
@@ -627,25 +643,26 @@ export async function analyzeTranscripts({
         config,
         repo,
         modelCwd,
+        invokeAnalysis,
         slot,
         openGapIndex,
         skillIndex,
         alsoLoaded,
       });
       if (result.status === "skipped") {
-        summary.skipped += 1;
         state.writeEvidence(transcript, { ...base, status: "skipped", reason: result.reason });
+        summary.skipped += 1;
       } else {
         base.key = evidenceKey(transcript, memoryHash, result.route);
         base.route = result.route;
-        summary.analyzed += 1;
-        summary.usage.push(result.usage);
         state.writeEvidence(transcript, {
           ...base,
           status: "ok",
           stats: result.distilled.stats,
           ...result.evidence,
         });
+        summary.analyzed += 1;
+        summary.usage.push(result.usage);
         evidenceTotals.positive += result.evidence.positive.length;
         evidenceTotals.negative += result.evidence.negative.length;
         evidenceTotals.gaps += result.evidence.gaps.length;
@@ -671,7 +688,9 @@ export async function analyzeTranscripts({
         info(`${color.dim(`  ${done}/${pending.length} analyzed`)}`);
       }
     }
-  });
+  };
+
+  await pool(pending, config.jobs, analyzePending);
 
   if (summary.quotesNotInTrace) {
     warn(

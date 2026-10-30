@@ -9,7 +9,9 @@ import { loadProjectSkills, loadSkills, resolveProjectSkillDirs, skillDescriptio
 import { estimateTokens } from "../src/tokens.js";
 import { State } from "../src/state.js";
 import {
+  READ_ONLY_BINARY,
   READ_ONLY_SEARCH_PATH,
+  READ_ONLY_VCS,
   STRAY_OUTSIDE_SURFACE,
   STRAY_READ_ONLY_SEARCH_PATH,
   STRAY_UNWRITABLE,
@@ -19,6 +21,7 @@ import {
   parseSkillFile,
   prepareWorkspace,
   repoFingerprint,
+  rebaseFingerprint,
   recoveredLineCounts,
   skillStagingRefusal,
   splitRemovalHunk,
@@ -79,6 +82,27 @@ test("the staging copy holds exactly the memory file and the skills directory, u
     skillsDir: ".agents/skills",
   });
   assert.equal(fs.readFileSync(path.join(again.root, "AGENTS.md"), "utf8"), AGENTS);
+});
+
+test("a skill's own object store and compiled tools stay out of the staging copy, named (#75)", () => {
+  // The store that ran a real synthesis out of heap: a skill checked out with its .git and
+  // shipping compiled binaries beside its instructions.
+  const { workspace } = stage({
+    ".agents/skills/db/SKILL.md": SKILL,
+    ".agents/skills/db/notes.txt": "n",
+    ".agents/skills/db/.git/objects/pack/pack-1.pack": "PACK\u0000\u0000\u0000\u0002",
+    ".agents/skills/db/bin/tool.exe": "MZ\u0090\u0000\u0003\u0000",
+  });
+  assert.deepEqual(walkStaged(path.join(workspace.root, ".agents/skills")), ["db/SKILL.md", "db/notes.txt"]);
+  assert.deepEqual(
+    [...workspace.originals.keys()].sort(),
+    ["AGENTS.md", ".agents/skills/db/SKILL.md", ".agents/skills/db/notes.txt"].sort(),
+  );
+  assert.deepEqual(workspace.unstageable, [
+    { path: ".agents/skills/db/bin/tool.exe", reason: READ_ONLY_BINARY },
+    { path: ".agents/skills/db/.git", reason: READ_ONLY_VCS },
+  ]);
+  assert.deepEqual(measureWorkspace(workspace).changes, [], "a file left out is never measured as deleted");
 });
 
 test("an untouched workspace measures as no change, and ids are stable across re-measurement", () => {
@@ -355,6 +379,7 @@ test("two links to one shared library are both billed, and exactly one of them i
     {
       path: ".agents/skills/db/SKILL.md",
       reason: "the same file is already staged as .agents/skills/database/SKILL.md",
+      identity: path.join(library, "SKILL.md"),
     },
   ]);
 });
@@ -973,3 +998,27 @@ test("a thematic break between a heading and its section never lets an extractio
     null,
   );
 });
+
+for (const relative of [".agents/skills/db/SKILL.md", ".agents/skills/db/notes.txt"]) {
+  test(`a concurrent source write after copying ${relative} cannot become a staged edit`, (t) => {
+    const repo = makeRepo({ "AGENTS.md": AGENTS, [relative]: SKILL });
+    const state = new State(repo.root).ensure();
+    const fingerprint = repoFingerprint(repo, ["AGENTS.md", relative]);
+    const copy = fs.copyFileSync;
+    t.mock.method(fs, "copyFileSync", (from, to, mode) => {
+      copy(from, to, mode);
+      if (from === path.join(repo.root, relative)) fs.writeFileSync(from, `${SKILL}Concurrent edit.\n`);
+    });
+    const workspace = prepareWorkspace({
+      state,
+      repo,
+      memoryFile: readMemoryFile(repo.root, "AGENTS.md"),
+      skillsDir: ".agents/skills",
+    });
+    rebaseFingerprint(fingerprint, workspace);
+    assert.equal(workspace.originals.get(relative), SKILL);
+    assert.equal(fs.readFileSync(path.join(workspace.root, relative), "utf8"), SKILL);
+    assert.deepEqual(measureWorkspace(workspace).changes, []);
+    assert.notEqual(repoFingerprint(repo, [relative])[relative], fingerprint[relative]);
+  });
+}

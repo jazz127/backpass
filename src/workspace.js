@@ -19,6 +19,10 @@ import { sha256 } from "./state.js";
  * The agent reads the real repository by absolute path for grounding; what it changes in
  * the copy is measured here (`measureWorkspace`) and becomes the proposal the human
  * reviews. The copy is wiped and rebuilt on every synthesis.
+ *
+ * Version-control internals and binary files are not the memory surface, so they stay out
+ * of the copy and each is named in `unstageable` with its reason (#75): a skill that ships
+ * its own `.git` or compiled tools must not turn staging into a copy of the whole store.
  */
 
 export const WORKSPACE_DIRNAME = "synthesis";
@@ -75,6 +79,7 @@ export function prepareWorkspace({
     staged: workspacePathFor(logical),
     source: path.isAbsolute(logical) ? logical : path.join(repo.root, logical),
   }));
+  /** @type {Array<{ path: string, reason: string, identity?: string | null }>} */
   const unstageable = [];
   const stagedIdentities = new Map();
   for (const { logical: sourceDir, staged: stagedDir, source: skillsSource } of skillMappings) {
@@ -104,7 +109,14 @@ export function prepareWorkspace({
       // one stays behind the narrowing: only a staged name can own anything.
       const owner = identity && stagedIdentities.get(identity);
       if (owner) {
-        unstageable.push({ path: logical, reason: `the same file is already staged as ${owner}` });
+        unstageable.push({ path: logical, reason: `the same file is already staged as ${owner}`, identity });
+        continue;
+      }
+      // `originals` holds every staged file as utf-8 text, and a binary does not survive that
+      // decode: it can never be a faithful original, no text edit applies to it, and a store
+      // of compiled tools held this way exhausts the heap. It stays out, named.
+      if (isBinaryFile(from)) {
+        unstageable.push({ path: logical, reason: READ_ONLY_BINARY });
         continue;
       }
       const staged = path.posix.join(stagedDir, relative);
@@ -120,7 +132,7 @@ export function prepareWorkspace({
         // touched; the source keeps its own mode, and apply takes the mode it writes from
         // the repository file rather than from here.
         fs.chmodSync(to, (fs.statSync(from).mode & 0o777) | 0o600);
-        originals.set(logical, fs.readFileSync(from, "utf8"));
+        originals.set(logical, fs.readFileSync(to, "utf8"));
       } catch (err) {
         fs.rmSync(to, { force: true });
         originals.delete(logical);
@@ -174,6 +186,27 @@ function entryKind(dir, entry) {
 
 const SKILL_FILENAME = "SKILL.md";
 
+/** Version-control internals: never skill content, so never walked, copied, or read. */
+const VCS_ENTRIES = new Set([".git", ".hg", ".svn"]);
+
+/** Bytes sniffed for a NUL: git's own test for "not text" (xdiff `buffer_is_binary`). */
+const BINARY_SNIFF_BYTES = 8000;
+
+/** True when the file's first bytes hold a NUL; a file that cannot be read is left to the copy's own handling. */
+function isBinaryFile(file) {
+  let fd = null;
+  try {
+    fd = fs.openSync(file, "r");
+    const head = Buffer.alloc(BINARY_SNIFF_BYTES);
+    const read = fs.readSync(fd, head, 0, BINARY_SNIFF_BYTES, 0);
+    return head.subarray(0, read).includes(0);
+  } catch {
+    return false;
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
+
 function isFile(file) {
   try {
     return fs.statSync(file).isFile();
@@ -209,6 +242,12 @@ function walkFiles(dir, prefix = "", confineTo = null, confined = [], searchPath
   };
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     const relative = prefix ? path.posix.join(prefix, entry.name) : entry.name;
+    // A nested object store is pruned, never descended into: it is not the memory surface,
+    // and walking it is how staging copied a whole repository's history (#75).
+    if (VCS_ENTRIES.has(entry.name)) {
+      confined.push({ relative, reason: READ_ONLY_VCS });
+      continue;
+    }
     // Follow symlinks: a skills directory is commonly a set of links into a shared
     // library, and those are the files the harness loads. Staging copies what it finds,
     // so an edit lands in the staging copy and never writes through a link.
@@ -251,6 +290,9 @@ function walkFiles(dir, prefix = "", confineTo = null, confined = [], searchPath
 const READ_ONLY_OUTSIDE_REPO = "resolves outside the repository";
 const READ_ONLY_UNREADABLE = "could not be read when the staging copy was built";
 const READ_ONLY_UNWRITABLE = "resolves to a location that cannot be written";
+/** Not the memory surface, so staging leaves it out: a nested object store, or a binary file. */
+export const READ_ONLY_VCS = "is version-control internals, not skill content";
+export const READ_ONLY_BINARY = "is a binary file, not text an edit can apply to";
 /** A configured `skillSearchPaths` root: read-only in every scope, never subject to `allowExternal`. */
 export const READ_ONLY_SEARCH_PATH = "resolves inside a configured skillSearchPaths root";
 
@@ -311,6 +353,7 @@ export function skillStagingRefusal(
 /** Why measurement dropped a file the model wrote: the note the human reads must say which. */
 export const STRAY_OUTSIDE_SURFACE = "synthesis wrote it outside the memory file and skills";
 export const STRAY_OUTSIDE_REPO = "it resolves outside the repository, which project scope cannot write";
+export const STRAY_VCS = "synthesis wrote version-control internals, which are never carried or applied";
 export const strayAliasReason = (owner) => `it is the same file already staged as ${owner}`;
 export const STRAY_UNWRITABLE =
   "it resolves to a location that cannot be written, so staging withheld it from the copy";
@@ -507,7 +550,9 @@ export function measureWorkspace(workspace) {
   const stray = [];
   const texts = new Map();
 
-  const present = new Set(walkFiles(root).map((p) => p.split(path.sep).join("/")));
+  // Staging never copies a VCS entry, so any the walk prunes here was written by synthesis.
+  const skipped = [];
+  const present = new Set(walkFiles(root, "", null, skipped).map((p) => p.split(path.sep).join("/")));
 
   const ordered = [memoryPath, ...[...originals.keys()].filter((f) => f !== memoryPath).sort()];
   for (const logical of ordered) {
@@ -533,20 +578,31 @@ export function measureWorkspace(workspace) {
     { logical: path.dirname(memoryPath), staged: path.posix.dirname(memoryStaged) },
   ];
 
+  const mappingFor = (staged) => dirMappings.find(({ staged: dir }) => staged === dir || staged.startsWith(`${dir}/`));
+  // Every note names the path the reader knows - the repository path, or the real one a
+  // user-scope entry resolves to - never the `.external/<hash>` the staging copy uses.
+  const logicalFor = (mapping, staged) => {
+    const inside = staged.slice(mapping.staged.length).replace(/^\//, "");
+    return path.isAbsolute(mapping.logical)
+      ? path.join(mapping.logical, inside)
+      : path.posix.join(mapping.logical, inside);
+  };
+
+  for (const { relative } of skipped.sort((a, b) => a.relative.localeCompare(b.relative))) {
+    const mapping = mappingFor(relative);
+    stray.push({ file: mapping ? logicalFor(mapping, relative) : relative, reason: STRAY_VCS });
+  }
+
   const knownStaged = new Set(stagedPaths.values());
   for (const staged of [...present].sort()) {
     if (knownStaged.has(staged)) continue;
-    const mapping = dirMappings.find(({ staged: dir }) => staged === dir || staged.startsWith(`${dir}/`));
+    const mapping = mappingFor(staged);
     if (!mapping) {
       stray.push({ file: staged, reason: STRAY_OUTSIDE_SURFACE });
       continue;
     }
     const inside = staged.slice(mapping.staged.length).replace(/^\//, "");
-    // Every note names the path the reader knows - the repository path, or the real one a
-    // user-scope entry resolves to - never the `.external/<hash>` the staging copy uses.
-    const logical = path.isAbsolute(mapping.logical)
-      ? path.join(mapping.logical, inside)
-      : path.posix.join(mapping.logical, inside);
+    const logical = logicalFor(mapping, staged);
     if (!isSkillFilePath(logical, skillDirs)) {
       stray.push({ file: logical, reason: STRAY_OUTSIDE_SURFACE });
       continue;
@@ -652,12 +708,30 @@ function signatureOf(changes) {
   ).slice(0, 16);
 }
 
+/** Where a fingerprinted key lives on disk: configured memory paths may be absolute, skills are repo-relative. */
+export function repoFilePath(repo, file) {
+  return path.isAbsolute(file) ? file : path.join(repo.root, file);
+}
+
 /** The files backpass must find untouched in the repo after synthesis: a moved write is a bug, loudly. */
 export function repoFingerprint(repo, files) {
   const out = {};
   for (const relative of files) {
-    const absolute = path.isAbsolute(relative) ? relative : path.join(repo.root, relative);
+    const absolute = repoFilePath(repo, relative);
     out[relative] = fs.existsSync(absolute) ? sha256(fs.readFileSync(absolute, "utf8")) : null;
   }
   return out;
+}
+
+/**
+ * Point the fingerprint of each staged skill at the text its staging copy was built from.
+ * The workspace is rebuilt after the fingerprint is taken, and a skill another process edits
+ * in between is copied as the new text; leaving the old hash would later read that edit as
+ * a write-through that happens to equal the staging copy. The memory file is not rebased:
+ * it is staged from the text already loaded, not re-read from disk.
+ */
+export function rebaseFingerprint(fingerprint, workspace) {
+  for (const [file, text] of workspace.originals) {
+    if (file !== workspace.memoryPath && file in fingerprint) fingerprint[file] = sha256(text);
+  }
 }

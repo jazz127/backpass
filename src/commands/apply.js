@@ -165,6 +165,7 @@ export async function cmdApply(ctx) {
     config,
     dryRun: Boolean(ctx.flags["dry-run"]),
     rejectReasons,
+    appliedBy: "apply",
   });
 
   if (surfaceFile) await closeApplySurface(surfaceFile);

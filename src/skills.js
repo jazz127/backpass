@@ -78,8 +78,7 @@ export function loadSkills(repoRoot, skillsDir) {
       continue;
     }
     const relative = path.relative(repoRoot, file);
-    const logical =
-      relative.startsWith("..") || path.isAbsolute(relative) ? file : relative.split(path.sep).join("/");
+    const logical = relative.startsWith("..") || path.isAbsolute(relative) ? file : relative.split(path.sep).join("/");
     skills.push(describeSkill(logical, text, entry.name.replace(/\.md$/, "")));
   }
 

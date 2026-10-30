@@ -79,6 +79,7 @@ export function prepareWorkspace({
     staged: workspacePathFor(logical),
     source: path.isAbsolute(logical) ? logical : path.join(repo.root, logical),
   }));
+  /** @type {Array<{ path: string, reason: string, identity?: string | null }>} */
   const unstageable = [];
   const stagedIdentities = new Map();
   for (const { logical: sourceDir, staged: stagedDir, source: skillsSource } of skillMappings) {

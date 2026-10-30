@@ -591,18 +591,7 @@ export async function synthesizeProposal({
     provenance,
     routing,
   });
-  const {
-    state,
-    rejections,
-    overflow,
-    skillDirs,
-    searchPathRoots,
-    target,
-    nested,
-    common,
-    context,
-    promptDir,
-  } = setup;
+  const { state, rejections, overflow, skillDirs, searchPathRoots, target, nested, common, context, promptDir } = setup;
   let { skillFiles, descriptionTokens, maxEdits } = setup;
 
   // Staging holds only the write surface: every skill on a surface run, none of them on
